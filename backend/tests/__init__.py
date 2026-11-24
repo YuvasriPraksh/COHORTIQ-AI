@@ -1,0 +1,1 @@
+"""Tests for the CohortIQ AI FastAPI backend foundation."""
