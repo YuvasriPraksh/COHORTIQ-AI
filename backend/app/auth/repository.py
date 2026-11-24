@@ -16,15 +16,19 @@ Security properties
   only public fields and never the hash or internal security counters.
 - Changing a password, role or email, or deactivating an account, increments
   ``token_version`` so existing access tokens stop working immediately.
+- Sign-in outcomes (failure counter, temporary lock, last login) are applied by
+  :func:`apply_login_attempt` in a single ``BEGIN IMMEDIATE`` transaction, so
+  concurrent attempts cannot lose counter updates or slip past a lock.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -32,6 +36,8 @@ from app.database import get_connection
 from backend.app.auth.models import ROLES, AuthenticatedUser
 from backend.app.auth.password_policy import validate_password_strength
 from backend.app.core.security import hash_password
+
+logger = logging.getLogger(__name__)
 
 MAX_EMAIL_LENGTH = 254
 MAX_FULL_NAME_LENGTH = 200
@@ -423,6 +429,126 @@ def deactivate_user(user_id: Any, *, db_path: str | Path | None = None) -> bool:
         )
         connection.commit()
         return cursor.rowcount > 0
+
+
+# --------------------------------------------------------------------------- #
+# Sign-in state
+# --------------------------------------------------------------------------- #
+
+
+def _utc_moment(now: Optional[datetime]) -> datetime:
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        raise ValueError("now must be timezone-aware.")
+    return moment.astimezone(timezone.utc)
+
+
+def _parse_stored_timestamp(value: Optional[str]) -> Optional[datetime]:
+    """Parse a stored ISO timestamp; ``None`` for a missing or unreadable value."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def is_locked(user: UserRecord, now: Optional[datetime] = None) -> bool:
+    """Return True while the account's temporary sign-in lock is in force.
+
+    An unreadable ``locked_until`` value (which the application never writes)
+    is treated as expired, so it can never cause a permanent lockout; the next
+    sign-in attempt overwrites it.
+    """
+    locked_until = _parse_stored_timestamp(user.locked_until)
+    return locked_until is not None and locked_until > _utc_moment(now)
+
+
+def apply_login_attempt(
+    user_id: Any,
+    *,
+    verified_password_hash: str,
+    password_matches: bool,
+    max_failed_attempts: int,
+    lockout_duration: timedelta,
+    now: Optional[datetime] = None,
+    db_path: str | Path | None = None,
+) -> Optional[UserRecord]:
+    """Atomically apply the outcome of a password check to an account.
+
+    ``verified_password_hash`` is the hash the password was checked against and
+    ``password_matches`` the result. The account is re-read inside a
+    ``BEGIN IMMEDIATE`` transaction (which takes SQLite's write lock before
+    reading), so concurrent attempts are serialized and every failure is counted.
+
+    Policy:
+    - Inactive or currently locked account: sign-in refused; nothing changes
+      (attempts during a lock neither extend it nor count towards the next one).
+    - Password hash changed since it was verified: refused; nothing changes.
+    - Wrong password: ``failed_login_count`` increases by one; once it reaches
+      ``max_failed_attempts`` the account is locked for ``lockout_duration``.
+      After a lock has expired, counting starts again from one.
+    - Correct password: the failure count and lock are cleared and
+      ``last_login_at`` is set.
+
+    Returns the updated record when sign-in is permitted, otherwise ``None``.
+    """
+    if isinstance(max_failed_attempts, bool) or not isinstance(max_failed_attempts, int) or max_failed_attempts < 1:
+        raise ValueError("max_failed_attempts must be a positive integer.")
+    if not isinstance(lockout_duration, timedelta) or lockout_duration <= timedelta(0):
+        raise ValueError("lockout_duration must be a positive timedelta.")
+    parsed_id = _parse_user_id(user_id)
+    if parsed_id is None:
+        return None
+    moment = _utc_moment(now)
+    timestamp = moment.isoformat(timespec="microseconds")
+
+    with closing(get_connection(db_path)) as connection:
+        connection.isolation_level = None  # explicit transaction control below
+        connection.execute("BEGIN IMMEDIATE;")
+        try:
+            select_sql = f"SELECT {_SELECT_COLUMNS} FROM users WHERE id = ?;"
+            row = connection.execute(select_sql, (parsed_id,)).fetchone()
+            signed_in: Optional[UserRecord] = None
+            if row is not None:
+                user = _row_to_record(row)
+                if not user.is_active or is_locked(user, moment) or user.password_hash != verified_password_hash:
+                    pass
+                elif password_matches:
+                    connection.execute(
+                        "UPDATE users SET failed_login_count = 0, locked_until = NULL, "
+                        "last_login_at = ?, updated_at = ? WHERE id = ?;",
+                        (timestamp, timestamp, parsed_id),
+                    )
+                    # Read inside the transaction so the token version used for
+                    # the new token is exactly the one this sign-in validated.
+                    signed_in = _row_to_record(connection.execute(select_sql, (parsed_id,)).fetchone())
+                else:
+                    # A lock that has expired starts a fresh counting window.
+                    previous = 0 if user.locked_until is not None else user.failed_login_count
+                    failures = previous + 1
+                    locked_until = None
+                    if failures >= max_failed_attempts:
+                        locked_until = (moment + lockout_duration).isoformat(timespec="microseconds")
+                        logger.warning(
+                            "Account %s temporarily locked after %d consecutive failed sign-in attempts.",
+                            parsed_id,
+                            failures,
+                        )
+                    connection.execute(
+                        "UPDATE users SET failed_login_count = ?, locked_until = ?, updated_at = ? WHERE id = ?;",
+                        (failures, locked_until, timestamp, parsed_id),
+                    )
+            connection.execute("COMMIT;")
+        except BaseException:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK;")
+            raise
+
+    return signed_in
 
 
 # --------------------------------------------------------------------------- #

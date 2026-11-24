@@ -134,6 +134,20 @@ interactive terminal:
 - Passwords are stored only as Argon2id hashes and are never printed or logged.
 - Use `--db-path PATH` to target a different SQLite file.
 
+### Signing in
+
+- `POST /api/v1/auth/login` takes `{"email": "...", "password": "..."}` and
+  returns `{"access_token": "...", "token_type": "bearer", "expires_in": 1800}`.
+  Unknown emails, wrong passwords, inactive accounts and locked accounts all get
+  the same `401` response.
+- `GET /api/v1/auth/me` returns the signed-in user's profile. Send the token as
+  `Authorization: Bearer <access_token>`.
+- After `LOGIN_MAX_FAILED_ATTEMPTS` (default 5) consecutive failed sign-ins, the
+  account is locked for `LOGIN_LOCKOUT_MINUTES` (default 15). Locks always
+  expire, and a successful sign-in resets the counter.
+- Sign-in requires `JWT_SECRET_KEY` to be set; without it the endpoints return `503`.
+- The regulation and query endpoints are not protected yet.
+
 ## Planned module responsibilities
 
 - `app/main.py`: Streamlit entry point and UI orchestration.

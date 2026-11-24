@@ -274,6 +274,9 @@ def test_parser_defines_no_password_option() -> None:
 def test_api_exposes_no_user_or_administrator_creation_route() -> None:
     paths = TestClient(api_app).get("/openapi.json").json()["paths"]
 
+    # Stage 3 adds only sign-in and the read-only profile; nothing creates accounts.
+    assert {method for method in paths["/api/v1/auth/login"]} == {"post"}
+    assert {method for method in paths["/api/v1/auth/me"]} == {"get"}
     assert set(paths) == {
         "/",
         "/api/v1/health",
@@ -284,8 +287,10 @@ def test_api_exposes_no_user_or_administrator_creation_route() -> None:
         "/api/v1/regulations/ingest",
         "/api/v1/regulations/{regulation_id}/verification",
         "/api/v1/query/ask",
+        "/api/v1/auth/login",
+        "/api/v1/auth/me",
     }
-    assert not any(word in path for path in paths for word in ("user", "admin", "register", "signup", "login", "auth"))
+    assert not any(word in path for path in paths for word in ("user", "admin", "register", "signup"))
 
 
 # --------------------------------------------------------------------------- #

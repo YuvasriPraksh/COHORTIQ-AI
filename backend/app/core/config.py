@@ -162,6 +162,11 @@ class Settings:
     jwt_audience: str = field(default_factory=lambda: _env_str("JWT_AUDIENCE", DEFAULT_JWT_AUDIENCE))
     access_token_expire_minutes: int = _auth_int("ACCESS_TOKEN_EXPIRE_MINUTES", 30, 1, 1440)
     jwt_leeway_seconds: int = _auth_int("JWT_LEEWAY_SECONDS", 30, 0, 300)
+    # Account lockout: this many consecutive failed sign-ins lock the account for
+    # LOGIN_LOCKOUT_MINUTES. Locks always expire (at most 24 hours), so lockout
+    # can never become permanent.
+    login_max_failed_attempts: int = _auth_int("LOGIN_MAX_FAILED_ATTEMPTS", 5, 1, 100)
+    login_lockout_minutes: int = _auth_int("LOGIN_LOCKOUT_MINUTES", 15, 1, 1440)
 
     def __post_init__(self) -> None:
         """Validate limits so misconfiguration fails at startup, not per request."""

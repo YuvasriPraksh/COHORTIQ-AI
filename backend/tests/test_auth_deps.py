@@ -16,6 +16,7 @@ from typing import Any, Iterator, Optional
 import jwt
 import pytest
 from fastapi import Depends, FastAPI
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from app.database import init_database
@@ -374,8 +375,32 @@ def test_existing_routes_remain_unprotected_in_stage_1(tmp_path: Path) -> None:
     finally:
         main_app.dependency_overrides.pop(regulation_routes.get_db_path, None)
 
+    # Since Stage 3 only GET /api/v1/auth/me requires a token.
     schema = TestClient(main_app).get("/openapi.json").json()
-    assert "securitySchemes" not in schema.get("components", {})
-    assert deps.get_current_user not in [
-        dependency.call for route in main_app.routes for dependency in getattr(getattr(route, "dependant", None), "dependencies", [])
-    ]
+    secured = {
+        (path, method)
+        for path, operations in schema["paths"].items()
+        for method, operation in operations.items()
+        if operation.get("security")
+    }
+    assert secured == {("/api/v1/auth/me", "get")}
+    # Included routers are nested (FastAPI keeps them as wrappers), so walk the
+    # whole tree, including nested dependencies such as require_role(...).
+    def api_routes(routes: list[Any]) -> Iterator[APIRoute]:
+        for route in routes:
+            if isinstance(route, APIRoute):
+                yield route
+            else:
+                nested = getattr(route, "original_router", None) or getattr(route, "router", None)
+                if nested is not None:
+                    yield from api_routes(nested.routes)
+
+    def calls(dependant: Any) -> Iterator[Any]:
+        for dependency in dependant.dependencies:
+            yield dependency.call
+            yield from calls(dependency)
+
+    routes = list(api_routes(main_app.routes))
+    assert len(routes) == len(schema["paths"]), "the route walk must reach every documented route"
+    protected_routes = {route.path for route in routes if deps.get_current_user in set(calls(route.dependant))}
+    assert protected_routes == {"/auth/me"}

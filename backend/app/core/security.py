@@ -147,6 +147,15 @@ def _signing_secret(settings: Settings) -> str:
     return secret
 
 
+def ensure_token_signing_configured(settings: Settings | None = None) -> None:
+    """Raise :class:`AuthConfigurationError` unless tokens can be signed.
+
+    Lets callers fail before doing any work (such as updating sign-in state)
+    when the signing secret is missing or weak.
+    """
+    _signing_secret(settings or get_settings())
+
+
 def _validate_subject(subject: Any) -> str:
     if isinstance(subject, bool) or not isinstance(subject, (str, int)):
         raise ValueError("Token subject must be a non-empty string or integer.")
