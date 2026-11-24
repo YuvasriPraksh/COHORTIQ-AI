@@ -223,7 +223,8 @@ def test_storage_failure_returns_500_without_leaking_details(
     def failing_insert(*_args: Any, **_kwargs: Any) -> int:
         raise sqlite3.OperationalError(f"disk I/O error at C:\\private\\cohortiq.db {SECRET_MARKER}")
 
-    monkeypatch.setattr(workflow, "insert_regulation", failing_insert)
+    # Ingestion stores the regulation and its pages through one atomic call.
+    monkeypatch.setattr(workflow, "insert_regulation_with_pages", failing_insert)
 
     with caplog.at_level("ERROR", logger="backend.app.api.v1.regulations"):
         response = harness.upload(_valid_pdf_bytes())
@@ -231,6 +232,7 @@ def test_storage_failure_returns_500_without_leaking_details(
     assert response.status_code == 500
     assert response.json() == {"detail": regulation_routes.INGESTION_INTERNAL_ERROR_DETAIL}
     _assert_no_internal_details(response, SECRET_MARKER, "disk I/O", "private")
+    assert harness.stored_regulations() == []
     harness.assert_temp_uploads_removed()
     # Full details are kept in server logs for operators.
     assert "internal_error" in caplog.text

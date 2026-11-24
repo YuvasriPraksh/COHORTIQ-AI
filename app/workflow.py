@@ -19,8 +19,7 @@ from app.citation_validator import validate_grounded_answer
 from app.database import (
     get_applicable_regulations,
     get_document_pages,
-    insert_document_pages,
-    insert_regulation,
+    insert_regulation_with_pages,
     update_regulation_verification_status,
 )
 from app.gemini_service import GeminiAnswerService, generate_grounded_answer
@@ -217,15 +216,21 @@ def ingest_uploaded_regulation(
     # Safety: never auto-approve on ingestion/extraction success.
     regulation_record["verification_status"] = "pending"
 
-    regulation_id: int | None = None
+    pages = extraction_result.get("pages", []) or []
     try:
-        regulation_id = insert_regulation(regulation_record, db_path=db_path)
-        pages = extraction_result.get("pages", []) or []
-        insert_document_pages(regulation_id, pages, db_path=db_path)
+        # Atomic: the regulation row and all page rows are committed together,
+        # or the whole transaction is rolled back and nothing is saved.
+        regulation_id = insert_regulation_with_pages(regulation_record, pages, db_path=db_path)
     except Exception as exc:
+        logger.exception(
+            "Failed to store regulation data; transaction rolled back (document_name=%r, pages=%d).",
+            regulation_record.get("document_name"),
+            len(pages),
+        )
         return {
             "status": "error",
-            "regulation_id": regulation_id,
+            # Nothing was persisted, so there is no regulation ID to report.
+            "regulation_id": None,
             "extraction_summary": extraction_summary,
             "message": f"Failed to store regulation data: {exc}",
         }

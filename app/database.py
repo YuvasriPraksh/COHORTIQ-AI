@@ -173,6 +173,115 @@ def insert_regulation(
         TypeError/ValueError: If applicability values are not in a supported
             format.
     """
+    regulation_values = _prepare_regulation_values(metadata)
+
+    with closing(get_connection(db_path)) as connection:
+        cursor = connection.cursor()
+        regulation_id = _insert_regulation_row(cursor, regulation_values)
+        connection.commit()
+        return regulation_id
+
+
+def insert_document_pages(
+    regulation_id: int,
+    pages: Sequence[Mapping[str, Any]],
+    db_path: str | Path | None = None,
+) -> None:
+    """Insert extracted page records for a regulation within a transaction.
+
+    Args:
+        regulation_id: ID of the parent regulation record.
+        pages: Sequence of page mappings. Each item should contain
+            ``page_number`` and may contain ``text``/``extracted_text`` and
+            ``status``/``extraction_status``.
+        db_path: Optional database path override.
+    """
+    page_values = _prepare_page_values(pages)
+
+    with closing(get_connection(db_path)) as connection:
+        cursor = connection.cursor()
+        cursor.execute("BEGIN;")
+        try:
+            _insert_page_rows(cursor, regulation_id, page_values)
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+
+def insert_regulation_with_pages(
+    metadata: Mapping[str, Any],
+    pages: Sequence[Mapping[str, Any]],
+    db_path: str | Path | None = None,
+) -> int:
+    """Atomically insert a regulation and all of its extracted pages.
+
+    Both inserts run on one connection inside one transaction: either the
+    regulation row and every page row are committed together, or nothing is
+    saved. Metadata and pages are validated and normalized exactly as in
+    ``insert_regulation`` and ``insert_document_pages`` before the transaction
+    starts, so invalid input never touches the database.
+
+    Args:
+        metadata: Regulation metadata (same contract as ``insert_regulation``).
+        pages: Page mappings (same contract as ``insert_document_pages``).
+        db_path: Optional database path override.
+
+    Returns:
+        The newly created regulation row ID.
+
+    Raises:
+        Any validation error from metadata/page normalization, or any database
+        error. On a database error the whole transaction is rolled back before
+        the exception is re-raised.
+    """
+    regulation_values = _prepare_regulation_values(metadata)
+    page_values = _prepare_page_values(pages)
+
+    with closing(get_connection(db_path)) as connection:
+        cursor = connection.cursor()
+        cursor.execute("BEGIN;")
+        try:
+            regulation_id = _insert_regulation_row(cursor, regulation_values)
+            _insert_page_rows(cursor, regulation_id, page_values)
+            connection.commit()
+        except BaseException:
+            # Roll back on any failure (including interrupts) so no partial
+            # regulation or page rows are ever persisted.
+            connection.rollback()
+            raise
+        return regulation_id
+
+
+_REGULATION_INSERT_SQL = """
+    INSERT INTO regulations (
+        document_name,
+        regulation_version,
+        effective_date,
+        applicable_batches,
+        applicable_programmes,
+        upload_date,
+        total_pages,
+        processing_status,
+        verification_status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+"""
+
+_PAGE_INSERT_SQL = """
+    INSERT INTO document_pages (
+        regulation_id, page_number, extracted_text, extraction_status
+    ) VALUES (?, ?, ?, ?);
+"""
+
+
+def _prepare_regulation_values(metadata: Mapping[str, Any]) -> tuple[Any, ...]:
+    """Validate and normalize regulation metadata into ordered insert values.
+
+    Raises:
+        KeyError: If a required metadata field is missing.
+        TypeError/ValueError: If applicability values are not in a supported
+            format or ``upload_date`` is None.
+    """
     required_keys = (
         "document_name",
         "regulation_version",
@@ -200,82 +309,54 @@ def insert_regulation(
     processing_status = metadata.get("processing_status")
     verification_status = metadata.get("verification_status")
 
-    with closing(get_connection(db_path)) as connection:
-        cursor = connection.cursor()
-        cursor.execute(
-            """
-            INSERT INTO regulations (
-                document_name,
-                regulation_version,
-                effective_date,
-                applicable_batches,
-                applicable_programmes,
-                upload_date,
-                total_pages,
-                processing_status,
-                verification_status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """,
-            (
-                document_name,
-                regulation_version,
-                effective_date,
-                applicable_batches,
-                applicable_programmes,
-                upload_date,
-                total_pages,
-                processing_status,
-                verification_status,
-            ),
-        )
-        connection.commit()
-        return int(cursor.lastrowid)
+    return (
+        document_name,
+        regulation_version,
+        effective_date,
+        applicable_batches,
+        applicable_programmes,
+        upload_date,
+        total_pages,
+        processing_status,
+        verification_status,
+    )
 
 
-def insert_document_pages(
-    regulation_id: int,
+def _prepare_page_values(
     pages: Sequence[Mapping[str, Any]],
-    db_path: str | Path | None = None,
-) -> None:
-    """Insert extracted page records for a regulation within a transaction.
-
-    Args:
-        regulation_id: ID of the parent regulation record.
-        pages: Sequence of page mappings. Each item should contain
-            ``page_number`` and may contain ``text``/``extracted_text`` and
-            ``status``/``extraction_status``.
-        db_path: Optional database path override.
-    """
-    page_rows: list[tuple[int, int, str | None, str | None]] = []
+) -> list[tuple[int, str | None, str | None]]:
+    """Validate and normalize page mappings into (page_number, text, status) values."""
+    page_values: list[tuple[int, str | None, str | None]] = []
     for page in pages:
         page_number = int(page["page_number"])
         extracted_text = page.get("extracted_text", page.get("text"))
         extraction_status = page.get("extraction_status", page.get("status"))
-        page_rows.append(
+        page_values.append(
             (
-                regulation_id,
                 page_number,
                 extracted_text if extracted_text is None else str(extracted_text),
                 extraction_status if extraction_status is None else str(extraction_status),
             )
         )
+    return page_values
 
-    with closing(get_connection(db_path)) as connection:
-        cursor = connection.cursor()
-        cursor.execute("BEGIN;")
-        try:
-            cursor.executemany(
-                """
-                INSERT INTO document_pages (
-                    regulation_id, page_number, extracted_text, extraction_status
-                ) VALUES (?, ?, ?, ?);
-                """,
-                page_rows,
-            )
-            connection.commit()
-        except Exception:
-            connection.rollback()
-            raise
+
+def _insert_regulation_row(cursor: sqlite3.Cursor, regulation_values: tuple[Any, ...]) -> int:
+    """Insert one prepared regulation row using the caller's cursor/transaction."""
+    cursor.execute(_REGULATION_INSERT_SQL, regulation_values)
+    return int(cursor.lastrowid)
+
+
+def _insert_page_rows(
+    cursor: sqlite3.Cursor,
+    regulation_id: int,
+    page_values: Sequence[tuple[int, str | None, str | None]],
+) -> None:
+    """Insert prepared page rows for a regulation using the caller's cursor/transaction."""
+    cursor.executemany(
+        _PAGE_INSERT_SQL,
+        [(regulation_id, *values) for values in page_values],
+    )
 
 
 def get_all_regulations(db_path: str | Path | None = None) -> list[dict[str, Any]]:
