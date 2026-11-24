@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from app import workflow
 from app.database import init_database, insert_document_pages, insert_regulation
 from app.models import GroundedAnswer, GroundedCitation
 from backend.app.api.v1.query import get_db_path
@@ -243,7 +244,20 @@ def test_approved_only_evidence_behavior(tmp_path: Path, monkeypatch) -> None:
     assert doc_names == {"Approved Regulation"}
     retrieval_names = {item.get("document_name") for item in data["retrieval"]["results"]}
     assert retrieval_names == {"Approved Regulation"}
-    assert all(reg.get("verification_status") == "approved" for reg in data["corpus"]["regulations"])
+
+    # The internal retrieval corpus is not part of the public API response ...
+    assert "corpus" not in data
+    # ... and the corpus the pipeline builds internally still contains only the
+    # approved, cohort-applicable regulation.
+    internal = workflow.answer_student_question(
+        admission_batch="2024",
+        programme="BSc CS",
+        question="What is the attendance percentage?",
+        db_path=db_path,
+    )
+    corpus_regulations = internal["corpus"]["regulations"]
+    assert [reg.get("document_name") for reg in corpus_regulations] == ["Approved Regulation"]
+    assert all(reg.get("verification_status") == "approved" for reg in corpus_regulations)
 
 
 def test_insufficient_evidence_response_when_no_approved_evidence(tmp_path: Path, monkeypatch) -> None:

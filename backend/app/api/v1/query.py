@@ -32,6 +32,12 @@ def get_db_path() -> Optional[str]:
     "/query/ask",
     response_model=GroundedAnswerResponse,
     responses={
+        200: {
+            "description": (
+                "Grounded answer with validated citations and retrieval source metadata. "
+                "The internal retrieval corpus and raw chunk text are not included."
+            )
+        },
         400: {"description": "question, admission_batch, or programme is blank."},
         500: {"description": "Unexpected internal server error. Details are logged, never returned."},
     },
@@ -45,6 +51,12 @@ def ask_student_question(
     Delegates to the existing query service/workflow to preserve cohort
     applicability filtering, approved-only retrieval, no-evidence handling,
     Gemini grounded-answer generation, and final citation validation.
+
+    The public response contains only ``status``, ``answer``, ``citations``,
+    ``validation_issues`` and ``retrieval`` (status, message and source
+    metadata for each retrieved chunk). The internal workflow result is passed
+    through ``GroundedAnswerResponse``, which drops the full retrieval corpus,
+    raw chunk text and any other undeclared internal field.
 
     Expected outcomes (answered, insufficient_evidence, conflicting_evidence)
     are returned with HTTP 200. Unexpected server exceptions are logged with

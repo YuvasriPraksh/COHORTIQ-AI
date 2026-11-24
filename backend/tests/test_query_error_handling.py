@@ -399,8 +399,13 @@ def test_regulation_lookup_failure_returns_safe_messages(
     assert body["citations"] == []
     assert body["answer"]["limitations"] == workflow.SAFE_REGULATION_LOOKUP_FAILURE
     assert body["retrieval"]["message"] == workflow.SAFE_REGULATION_LOOKUP_FAILURE
-    assert body["corpus"]["message"] == workflow.SAFE_REGULATION_LOOKUP_FAILURE
+    assert "corpus" not in body, "The internal corpus is not part of the public response."
     _assert_logged(caplog, WORKFLOW_LOGGER, planted)
+
+    # Streamlit still receives the internal corpus, so it must carry the safe message too.
+    internal = workflow.answer_student_question(BATCH, PROGRAMME, "Attendance?", db_path=tmp_path / "query_errors.db")
+    assert internal["corpus"]["message"] == workflow.SAFE_REGULATION_LOOKUP_FAILURE
+    assert SECRET_MARKER not in str(internal) and PRIVATE_PATH not in str(internal)
 
 
 def test_page_loading_failure_is_safe_and_other_regulations_still_answer(
@@ -444,11 +449,17 @@ def test_page_loading_failure_is_safe_and_other_regulations_still_answer(
     assert body["status"] == "answered"
     assert {c["document_name"] for c in body["citations"]} == {"Attendance Rules Supplement"}
 
-    failed = [r for r in body["corpus"]["regulations"] if r["id"] != healthy_id]
+    assert "corpus" not in body, "The internal corpus is not part of the public response."
+    _assert_logged(caplog, WORKFLOW_LOGGER, planted)
+
+    # Streamlit still receives the internal corpus: the failed regulation must be
+    # reported there with the safe message, never the original exception text.
+    internal = workflow.answer_student_question(BATCH, PROGRAMME, "Attendance?", db_path=db_path)
+    failed = [r for r in internal["corpus"]["regulations"] if r["id"] != healthy_id]
     assert len(failed) == 1
     assert failed[0]["page_load_error"] == workflow.SAFE_PAGE_LOAD_FAILURE
     assert failed[0]["pages_loaded"] == 0
-    _assert_logged(caplog, WORKFLOW_LOGGER, planted)
+    assert SECRET_MARKER not in str(internal) and PRIVATE_PATH not in str(internal)
 
 
 def test_chunk_creation_failure_is_logged_and_not_exposed(

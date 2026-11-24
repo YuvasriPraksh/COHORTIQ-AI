@@ -148,7 +148,9 @@ def test_grounded_answer_response_and_insufficient_evidence_serialization() -> N
     assert dumped["validation_issues"] == []
     assert dumped["retrieval"]["status"] == "no_evidence"
     assert dumped["retrieval"]["results"] == []
-    assert dumped["corpus"]["status"] == "no_evidence"
+    # The workflow supplies its internal corpus, but the public envelope drops it.
+    assert "corpus" not in dumped
+    assert set(dumped) == {"status", "answer", "citations", "validation_issues", "retrieval"}
 
 
 def test_regulation_response_serialization() -> None:

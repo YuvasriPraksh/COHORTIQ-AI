@@ -66,12 +66,17 @@ class StudentQuestionRequest(CohortInfo):
 
 
 class RetrievalResultItem(BaseModel):
-    """Retrieved evidence chunk/result item as returned by retrieval."""
+    """Public metadata for a retrieved evidence chunk.
 
-    model_config = ConfigDict(extra="allow")
+    Only the fields declared here are returned to API clients; anything else on
+    the internal retrieval result (including the chunk text) is dropped. The
+    evidence text that supports an answer is available through
+    ``citations[].relevant_supporting_text``.
+    """
+
+    model_config = ConfigDict(extra="ignore")
 
     chunk_id: Optional[Any] = None
-    chunk_text: Optional[str] = None
     regulation_id: Optional[Any] = None
     document_name: Optional[str] = None
     regulation_version: Optional[str] = None
@@ -82,9 +87,9 @@ class RetrievalResultItem(BaseModel):
 
 
 class RetrievalResponse(BaseModel):
-    """Retrieval response envelope."""
+    """Public retrieval summary: status, message and evidence source metadata."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="ignore")
 
     results: List[RetrievalResultItem] = Field(default_factory=list)
     status: str
@@ -92,16 +97,21 @@ class RetrievalResponse(BaseModel):
 
 
 class GroundedAnswerResponse(BaseModel):
-    """Response envelope returned by the student question workflow/service."""
+    """Public response for a student question.
 
-    model_config = ConfigDict(extra="allow")
+    Contains only the declared fields: ``status``, ``answer``, ``citations``,
+    ``validation_issues`` and ``retrieval``. The internal workflow result also
+    carries the full retrieval ``corpus`` (used by the pipeline and Streamlit);
+    it is intentionally not part of the API response and is dropped here.
+    """
+
+    model_config = ConfigDict(extra="ignore")
 
     status: str
     answer: GroundedAnswer
     citations: List[GroundedCitation] = Field(default_factory=list)
     validation_issues: List[str] = Field(default_factory=list)
     retrieval: RetrievalResponse
-    corpus: Optional[Dict[str, Any]] = None
 
 
 class InsufficientEvidenceResponse(GroundedAnswerResponse):
