@@ -7,10 +7,69 @@ duplicating business logic.
 
 from __future__ import annotations
 
+from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
 
 from app import database, workflow
+
+# Message prefixes produced by ``app.workflow.ingest_uploaded_regulation`` and
+# ``app.pdf_processor.extract_text_from_pdf``. The workflow reports every
+# failure as ``status == "error"``; these prefixes identify the failure stage.
+_INVALID_METADATA_PREFIX = "Invalid regulation metadata:"
+_PDF_EXTRACTION_PREFIX = "PDF extraction failed:"
+_INVALID_PDF_MARKER = "Invalid or corrupted PDF file"
+
+
+ALLOWED_VERIFICATION_STATUSES: tuple[str, ...] = ("approved", "pending", "rejected")
+"""Verification statuses an administrator may set through the API.
+
+These are the three states the application recognizes for review workflows:
+``approved`` makes a regulation eligible as student evidence, ``rejected``
+excludes it, and ``pending`` returns it to the review queue.
+"""
+
+
+def normalize_verification_status(value: Any) -> str | None:
+    """Return the canonical (trimmed, lower-case) status, or ``None`` if not allowed."""
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    return normalized if normalized in ALLOWED_VERIFICATION_STATUSES else None
+
+
+class IngestionFailureKind(str, Enum):
+    """Category of a failed ingestion result."""
+
+    INVALID_METADATA = "invalid_metadata"
+    """The client supplied missing or invalid regulation metadata."""
+
+    INVALID_PDF = "invalid_pdf"
+    """The uploaded file could not be opened as a PDF (corrupted, empty, not a PDF)."""
+
+    INTERNAL_ERROR = "internal_error"
+    """A server-side failure (storage, temporary file handling, unexpected errors)."""
+
+
+def classify_ingestion_failure(result: Mapping[str, Any]) -> IngestionFailureKind | None:
+    """Classify an ingestion workflow result.
+
+    Returns ``None`` for a successful ingestion. Only failures positively
+    identified as caused by the client's input are classified as client errors;
+    every other failure, including unrecognized statuses or messages, is treated
+    as an internal error so server faults are never reported as client mistakes.
+    """
+    status = result.get("status")
+    if status == "ingested":
+        return None
+
+    message = str(result.get("message") or "")
+    if status == "error":
+        if message.startswith(_INVALID_METADATA_PREFIX):
+            return IngestionFailureKind.INVALID_METADATA
+        if message.startswith(_PDF_EXTRACTION_PREFIX) and _INVALID_PDF_MARKER in message:
+            return IngestionFailureKind.INVALID_PDF
+    return IngestionFailureKind.INTERNAL_ERROR
 
 
 def ingest_regulation(

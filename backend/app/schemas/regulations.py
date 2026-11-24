@@ -114,7 +114,13 @@ class VerificationUpdateRequest(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    verification_status: str = "approved"
+    verification_status: str = Field(
+        default="approved",
+        description=(
+            "Verification status to set. Allowed values: approved, pending, rejected "
+            "(case-insensitive). Other values are rejected with HTTP 400."
+        ),
+    )
 
 
 class VerificationUpdateResponse(BaseModel):

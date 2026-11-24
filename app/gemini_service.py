@@ -9,6 +9,7 @@ returns structured responses with citations derived from supplied evidence.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -17,6 +18,8 @@ from google.genai import errors as genai_errors
 
 from app.config import Settings, get_settings
 from app.models import GroundedAnswer, GroundedCitation
+
+logger = logging.getLogger(__name__)
 
 _ALLOWED_STATUSES = {"answered", "insufficient_evidence", "conflicting_evidence"}
 
@@ -406,6 +409,8 @@ class GeminiAnswerService:
             raise
         except genai_errors.APIError as exc:
             # Includes rate-limit and temporary service failures in google-genai.
+            # Details are logged server-side; the prompt (student question) is not.
+            logger.warning("Gemini API request failed (model=%r): %s", self.model_name, exc)
             message = str(exc).lower()
             if "429" in message or "rate" in message or "quota" in message or "resource_exhausted" in message:
                 limitation = "Gemini API rate limit or quota exceeded. Please try again later."
@@ -418,6 +423,7 @@ class GeminiAnswerService:
                 limitation,
             )
         except Exception:
+            logger.exception("Unexpected Gemini service error (model=%r).", self.model_name)
             return _insufficient_answer(
                 "I cannot provide a grounded answer right now because the answer generation service encountered an error.",
                 "Unexpected Gemini service error.",
@@ -431,11 +437,14 @@ class GeminiAnswerService:
             parsed = _extract_json_object(response_text)
             return _normalize_model_response(parsed, normalized_evidence)
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            # Validation errors can echo raw model output; keep them in logs only.
+            logger.warning("Gemini returned invalid or incomplete output (model=%r): %s", self.model_name, exc)
             return _insufficient_answer(
                 "I cannot provide a grounded answer because the model response was invalid or incomplete.",
-                f"Invalid model output: {exc}",
+                "The model response was invalid or incomplete.",
             )
         except Exception:
+            logger.exception("Gemini response could not be validated (model=%r).", self.model_name)
             return _insufficient_answer(
                 "I cannot provide a grounded answer because the model response could not be validated.",
                 "Malformed or incomplete model response.",

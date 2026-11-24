@@ -9,6 +9,7 @@ calls when retrieval has no evidence, and final citation validation.
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -26,6 +27,27 @@ from app.gemini_service import GeminiAnswerService, generate_grounded_answer
 from app.models import GroundedAnswer
 from app.pdf_processor import extract_text_from_pdf
 from app.retrieval import retrieve_relevant_chunks
+
+logger = logging.getLogger(__name__)
+
+# User-facing messages for unexpected internal failures in the student
+# question-answer workflow. Technical details (exception text, paths,
+# configuration) are written to server logs only. Student question text is
+# never logged.
+SAFE_REGULATION_LOOKUP_FAILURE = (
+    "Applicable regulations could not be retrieved due to an internal error. Please try again later."
+)
+SAFE_PAGE_LOAD_FAILURE = "The pages of this regulation could not be loaded due to an internal error."
+SAFE_GENERATION_NOT_CONFIGURED = (
+    "The answer generation service is not configured. Please contact the system administrator."
+)
+SAFE_GENERATION_FAILURE = (
+    "The Gemini answer generation service failed due to an internal error. Please try again later."
+)
+SAFE_CITATION_VALIDATION_FAILURE = (
+    "Citation validation could not be completed due to an internal error, so no answer can be shown."
+)
+SAFE_CITATION_VALIDATION_ISSUE = "Citation validation could not be completed due to an internal error."
 
 _REQUIRED_METADATA_FIELDS = (
     "document_name",
@@ -250,6 +272,11 @@ def approve_regulation(
             db_path=db_path,
         )
     except Exception as exc:
+        logger.exception(
+            "Failed to update verification status (regulation_id=%r, verification_status=%r).",
+            regulation_id,
+            str(verification_status),
+        )
         return {
             "status": "error",
             "regulation_id": regulation_id,
@@ -319,8 +346,13 @@ def build_retrieval_corpus_for_cohort(
         regulations = get_applicable_regulations(
             str(admission_batch), str(programme), db_path=db_path
         )
-    except Exception as exc:
-        return _no_evidence_corpus(f"Failed to retrieve applicable regulations: {exc}")
+    except Exception:
+        logger.exception(
+            "Failed to retrieve applicable regulations (admission_batch=%r, programme=%r).",
+            str(admission_batch),
+            str(programme),
+        )
+        return _no_evidence_corpus(SAFE_REGULATION_LOOKUP_FAILURE)
 
     if not regulations:
         return _no_evidence_corpus(
@@ -333,12 +365,16 @@ def build_retrieval_corpus_for_cohort(
         regulation_id = regulation.get("id")
         try:
             pages = get_document_pages(regulation_id, db_path=db_path)
-        except Exception as exc:
+        except Exception:
             # Skip a regulation that cannot be loaded, but continue building corpus from others.
+            logger.exception(
+                "Failed to load document pages for regulation_id=%r; excluding it from the corpus.",
+                regulation_id,
+            )
             included_regulations.append(
                 {
                     **dict(regulation),
-                    "page_load_error": str(exc),
+                    "page_load_error": SAFE_PAGE_LOAD_FAILURE,
                     "pages_loaded": 0,
                     "chunks_created": 0,
                 }
@@ -354,6 +390,10 @@ def build_retrieval_corpus_for_cohort(
                 overlap=overlap,
             )
         except Exception:
+            logger.exception(
+                "Failed to create chunks for regulation_id=%r; excluding it from the corpus.",
+                regulation_id,
+            )
             chunks = []
 
         enriched_chunks: list[dict[str, Any]] = []
@@ -562,19 +602,29 @@ def answer_student_question(
             )
         if not isinstance(generated_answer, GroundedAnswer):
             raise TypeError("Gemini service returned an invalid answer type.")
-    except ValueError as exc:
+    except ValueError:
+        logger.exception(
+            "Answer generation is not configured correctly (admission_batch=%r, programme=%r).",
+            str(admission_batch),
+            str(programme),
+        )
         generated_answer = GroundedAnswer(
             answer="I cannot provide a grounded answer because the answer generation service is not configured correctly.",
             status="insufficient_evidence",
             citations=[],
-            limitations=str(exc),
+            limitations=SAFE_GENERATION_NOT_CONFIGURED,
         )
-    except Exception as exc:
+    except Exception:
+        logger.exception(
+            "Answer generation failed (admission_batch=%r, programme=%r).",
+            str(admission_batch),
+            str(programme),
+        )
         generated_answer = GroundedAnswer(
             answer="I cannot provide a grounded answer because the answer generation service failed.",
             status="insufficient_evidence",
             citations=[],
-            limitations=f"Gemini generation error: {exc}",
+            limitations=SAFE_GENERATION_FAILURE,
         )
 
     # Final safeguard: validate citations against the same original retrieved evidence.
@@ -582,14 +632,19 @@ def answer_student_question(
         validated_answer, validation_issues = validate_grounded_answer(
             generated_answer, retrieved_evidence
         )
-    except Exception as exc:
+    except Exception:
+        logger.exception(
+            "Citation validation failed (admission_batch=%r, programme=%r).",
+            str(admission_batch),
+            str(programme),
+        )
         validated_answer = GroundedAnswer(
             answer="I cannot provide a grounded answer because citation validation failed.",
             status="insufficient_evidence",
             citations=[],
-            limitations=f"Citation validation error: {exc}",
+            limitations=SAFE_CITATION_VALIDATION_FAILURE,
         )
-        validation_issues = [str(exc)]
+        validation_issues = [SAFE_CITATION_VALIDATION_ISSUE]
 
     return {
         "status": validated_answer.status,
