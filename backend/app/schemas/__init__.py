@@ -1,0 +1,1 @@
+"""Pydantic schemas for future CohortIQ AI FastAPI endpoints."""

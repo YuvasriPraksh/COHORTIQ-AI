@@ -1,10 +1,11 @@
-"""FastAPI application entry point for the CohortIQ AI backend foundation."""
+"""FastAPI application entry point for the CohortIQ AI backend."""
 
 from __future__ import annotations
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from backend.app.api.v1 import api_router
 from backend.app.core.config import get_settings
 
 
@@ -30,11 +31,4 @@ def read_root() -> dict[str, str]:
     }
 
 
-@app.get(f"{settings.api_v1_prefix}/health")
-def health_check() -> dict[str, str]:
-    """Return a basic health response indicating the API is running."""
-    return {
-        "status": "ok",
-        "service": settings.project_name,
-        "message": "API is running",
-    }
+app.include_router(api_router, prefix=settings.api_v1_prefix)
