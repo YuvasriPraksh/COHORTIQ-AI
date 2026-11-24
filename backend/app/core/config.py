@@ -25,6 +25,28 @@ DEFAULT_TOP_K = 5
 DEFAULT_CHUNK_SIZE = 1000
 DEFAULT_OVERLAP = 200
 
+# --- Authentication -----------------------------------------------------------
+APP_ENVIRONMENTS = ("development", "test", "production")
+MIN_JWT_SECRET_BYTES = 32
+MIN_JWT_SECRET_DISTINCT_CHARACTERS = 8
+_PLACEHOLDER_SECRET_MARKERS = (
+    "changeme",
+    "change-me",
+    "change_me",
+    "replace-me",
+    "replace_me",
+    "replaceme",
+    "your-secret",
+    "your_secret",
+    "yoursecret",
+    "secret-key",
+    "secret_key",
+    "placeholder",
+    "example",
+)
+DEFAULT_JWT_ISSUER = "cohortiq-ai-api"
+DEFAULT_JWT_AUDIENCE = "cohortiq-ai-clients"
+
 
 def _parse_csv_origins(value: str | None) -> list[str]:
     """Parse a comma-separated origins string into a cleaned list."""
@@ -49,6 +71,45 @@ def _env_int(name: str, default: int) -> int:
 def _limit(name: str, default: int) -> int:
     """Dataclass field for an integer limit overridable via environment variable ``name``."""
     return field(default_factory=lambda: _env_int(name, default), metadata={"env": name})
+
+
+def _env_str(name: str, default: str) -> str:
+    """Read a non-secret string setting; blank values fall back to ``default``."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip()
+
+
+def _env_secret(name: str) -> str | None:
+    """Read a secret; blank values are treated as missing. Never logged or echoed."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    return raw.strip()
+
+
+def _auth_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    """Dataclass field for a bounded authentication integer setting."""
+    return field(
+        default_factory=lambda: _env_int(name, default),
+        metadata={"auth_env": name, "min": minimum, "max": maximum},
+    )
+
+
+def jwt_secret_weakness(secret: str) -> str | None:
+    """Return why ``secret`` is too weak for signing tokens, or ``None`` if acceptable.
+
+    The returned reason never contains the secret itself.
+    """
+    if len(secret.encode("utf-8")) < MIN_JWT_SECRET_BYTES:
+        return f"must be at least {MIN_JWT_SECRET_BYTES} bytes long"
+    if len(set(secret)) < MIN_JWT_SECRET_DISTINCT_CHARACTERS:
+        return "must not be a low-entropy (repetitive) value"
+    lowered = secret.lower()
+    if any(marker in lowered for marker in _PLACEHOLDER_SECRET_MARKERS):
+        return "must not be a placeholder value"
+    return None
 
 
 @dataclass(frozen=True)
@@ -89,8 +150,22 @@ class Settings:
     max_form_fields: int = _limit("MAX_FORM_FIELDS", 120)
     max_form_part_size: int = _limit("MAX_FORM_PART_SIZE", 16 * KIB)
 
+    # --- Authentication -------------------------------------------------------
+    # Deployment environment: development, test or production.
+    app_env: str = field(default_factory=lambda: _env_str("APP_ENV", "development").lower())
+    # HS256 signing secret. Required (and must be strong) in production; there is
+    # deliberately no default. Excluded from repr so it never appears in logs.
+    jwt_secret_key: str | None = field(
+        default_factory=lambda: _env_secret("JWT_SECRET_KEY"), repr=False
+    )
+    jwt_issuer: str = field(default_factory=lambda: _env_str("JWT_ISSUER", DEFAULT_JWT_ISSUER))
+    jwt_audience: str = field(default_factory=lambda: _env_str("JWT_AUDIENCE", DEFAULT_JWT_AUDIENCE))
+    access_token_expire_minutes: int = _auth_int("ACCESS_TOKEN_EXPIRE_MINUTES", 30, 1, 1440)
+    jwt_leeway_seconds: int = _auth_int("JWT_LEEWAY_SECONDS", 30, 0, 300)
+
     def __post_init__(self) -> None:
         """Validate limits so misconfiguration fails at startup, not per request."""
+        self._validate_authentication()
         for item in fields(self):
             env_name = item.metadata.get("env")
             if env_name is None:
@@ -113,6 +188,44 @@ class Settings:
             raise ValueError(f"Invalid configuration: MAX_OVERLAP must be >= the default overlap ({DEFAULT_OVERLAP}).")
         if self.max_effective_date_length < len("YYYY-MM-DD"):
             raise ValueError("Invalid configuration: MAX_EFFECTIVE_DATE_LENGTH must be >= 10.")
+
+    def _validate_authentication(self) -> None:
+        """Validate authentication settings. Error messages never include secret values."""
+        if self.app_env not in APP_ENVIRONMENTS:
+            raise ValueError(
+                "Invalid configuration: APP_ENV must be one of " + ", ".join(APP_ENVIRONMENTS) + "."
+            )
+
+        for item in fields(self):
+            env_name = item.metadata.get("auth_env")
+            if env_name is None:
+                continue
+            value = getattr(self, item.name)
+            minimum, maximum = item.metadata["min"], item.metadata["max"]
+            if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+                raise ValueError(
+                    f"Invalid configuration: {env_name} must be an integer between {minimum} and {maximum}."
+                )
+
+        for env_name, value in (("JWT_ISSUER", self.jwt_issuer), ("JWT_AUDIENCE", self.jwt_audience)):
+            if not isinstance(value, str) or not value.strip() or value != value.strip():
+                raise ValueError(f"Invalid configuration: {env_name} must be a non-empty string.")
+
+        secret = self.jwt_secret_key
+        if secret is None:
+            if self.app_env == "production":
+                raise ValueError("Invalid configuration: JWT_SECRET_KEY is required in production.")
+            return
+        if not isinstance(secret, str):
+            raise ValueError("Invalid configuration: JWT_SECRET_KEY must be a string.")
+        weakness = jwt_secret_weakness(secret)
+        if weakness is not None:
+            # A configured secret must always be strong, in every environment.
+            raise ValueError(f"Invalid configuration: JWT_SECRET_KEY {weakness}.")
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env == "production"
 
     @property
     def max_upload_request_bytes(self) -> int:

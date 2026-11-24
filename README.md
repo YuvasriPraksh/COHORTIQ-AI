@@ -79,6 +79,61 @@ CohortIQ1/
 - Keep secrets in `.env`, which is ignored by Git.
 - Use `.env.example` as a safe template for required variables.
 
+## FastAPI backend: database and first administrator
+
+### Database initialization
+
+The backend uses the same SQLite database as the Streamlit app (`DATABASE_PATH`,
+default `data/cohortiq.db`). Tables are created automatically, and existing data
+is never modified:
+
+- Starting the API creates the regulation tables (`regulations`,
+  `document_pages`) and the backend-only `users` table if they do not exist.
+- The first-administrator script below does the same before creating an account.
+
+Run commands from the project root so the relative `DATABASE_PATH` resolves
+correctly:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload
+```
+
+The `users` table is used only by the API. The Streamlit app does not use it and
+is unaffected.
+
+### Authentication settings
+
+Copy the authentication section of `.env.example` into your `.env`. For any
+deployment, set a strong signing secret in `.env` (never commit it):
+
+```powershell
+.\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+Paste the output as `JWT_SECRET_KEY=` in `.env`. With `APP_ENV=production` the
+API refuses to start if `JWT_SECRET_KEY` is missing or weak (shorter than 32
+bytes, repetitive, or a placeholder value).
+
+### Creating the first administrator
+
+Administrators cannot be created through the API. Create the first one from an
+interactive terminal:
+
+```powershell
+.\.venv\Scripts\python.exe -m backend.scripts.create_admin --email admin@university.edu --full-name "Registrar Office"
+```
+
+- The password is entered twice at a hidden prompt. It cannot be passed as a
+  command-line argument, and the command refuses to run when input is piped.
+- Passwords must be at least 12 characters and use at least three of lowercase,
+  uppercase, digits and symbols (or be a passphrase of 20+ characters). Common
+  words such as "password", repetitive passwords and passwords containing the
+  email name are rejected.
+- If an account with the same email already exists (in any letter case or role),
+  nothing is created or changed.
+- Passwords are stored only as Argon2id hashes and are never printed or logged.
+- Use `--db-path PATH` to target a different SQLite file.
+
 ## Planned module responsibilities
 
 - `app/main.py`: Streamlit entry point and UI orchestration.
