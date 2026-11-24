@@ -4,9 +4,19 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.chunking import _normalize_strategy
 from app.models import GroundedAnswer, GroundedCitation
+from backend.app.core.config import (
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_OVERLAP,
+    DEFAULT_TOP_K,
+    get_settings,
+)
+
+_LIMITS = get_settings()
+MAX_STRATEGY_LENGTH = 50
 
 
 class CohortInfo(BaseModel):
@@ -14,18 +24,45 @@ class CohortInfo(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    admission_batch: str
-    programme: str
+    admission_batch: str = Field(max_length=_LIMITS.max_identifier_length)
+    programme: str = Field(max_length=_LIMITS.max_identifier_length)
 
 
 class StudentQuestionRequest(CohortInfo):
-    """Request payload for answering a cohort-specific student question."""
+    """Request payload for answering a cohort-specific student question.
 
-    top_k: int = 5
-    chunking_strategy: str = "recursive"
-    chunk_size: int = 1000
-    overlap: int = 200
-    question: str
+    Integer fields are strict: booleans, numeric strings and decimals are
+    rejected. Blank text fields are still rejected by the route with HTTP 400.
+    """
+
+    top_k: int = Field(default=DEFAULT_TOP_K, ge=1, le=_LIMITS.max_top_k, strict=True)
+    chunking_strategy: str = Field(default="recursive", max_length=MAX_STRATEGY_LENGTH)
+    chunk_size: int = Field(
+        default=DEFAULT_CHUNK_SIZE,
+        ge=_LIMITS.min_chunk_size,
+        le=_LIMITS.max_chunk_size,
+        strict=True,
+    )
+    overlap: int = Field(default=DEFAULT_OVERLAP, ge=0, le=_LIMITS.max_overlap, strict=True)
+    question: str = Field(max_length=_LIMITS.max_question_length)
+
+    @field_validator("chunking_strategy")
+    @classmethod
+    def _validate_chunking_strategy(cls, value: str) -> str:
+        """Accept the strategies and aliases supported by ``app.chunking``."""
+        try:
+            _normalize_strategy(value)
+        except ValueError:
+            raise ValueError(
+                "Unsupported chunking strategy. Use 'fixed_size', 'recursive', or 'semantic'."
+            ) from None
+        return value
+
+    @model_validator(mode="after")
+    def _validate_overlap_below_chunk_size(self) -> "StudentQuestionRequest":
+        if self.overlap >= self.chunk_size:
+            raise ValueError("overlap must be smaller than chunk_size")
+        return self
 
 
 class RetrievalResultItem(BaseModel):

@@ -11,6 +11,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
 
+import fitz  # PyMuPDF, already used by app.pdf_processor
+
 from app import database, workflow
 
 # Message prefixes produced by ``app.workflow.ingest_uploaded_regulation`` and
@@ -70,6 +72,24 @@ def classify_ingestion_failure(result: Mapping[str, Any]) -> IngestionFailureKin
         if message.startswith(_PDF_EXTRACTION_PREFIX) and _INVALID_PDF_MARKER in message:
             return IngestionFailureKind.INVALID_PDF
     return IngestionFailureKind.INTERNAL_ERROR
+
+
+def count_pdf_pages(pdf_path: str | Path) -> int | None:
+    """Return the page count of a PDF without extracting any text.
+
+    Returns ``None`` when the file cannot be opened as a PDF; the ingestion
+    workflow then reports it through its existing invalid-PDF handling.
+    """
+    try:
+        document = fitz.open(pdf_path)
+    except Exception:
+        return None
+    try:
+        return int(document.page_count)
+    except Exception:
+        return None
+    finally:
+        document.close()
 
 
 def ingest_regulation(

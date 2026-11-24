@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import tempfile
+from datetime import date
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Annotated, Any, Mapping, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from pydantic import StringConstraints
 
 from app.database import get_applicable_regulations
+from backend.app.core.config import MIB, Settings, format_byte_size, get_settings
 from backend.app.schemas.regulations import (
     DocumentPageListResponse,
     RegulationDetailResponse,
@@ -48,6 +52,59 @@ _INGESTION_FAILURE_STATUS_CODES = {
     IngestionFailureKind.INVALID_PDF: 422,
     IngestionFailureKind.INTERNAL_ERROR: 500,
 }
+
+# --- Input limits ------------------------------------------------------------
+_API_SETTINGS = get_settings()
+
+UPLOAD_COPY_CHUNK_BYTES = 1 * MIB
+"""Uploads are copied to disk in bounded chunks; never read whole into memory."""
+
+_ISO_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+EFFECTIVE_DATE_FORMAT_DETAIL = "effective_date must be a valid date in YYYY-MM-DD format."
+
+ApplicabilityValue = Annotated[str, StringConstraints(max_length=_API_SETTINGS.max_identifier_length)]
+
+
+def get_api_settings() -> Settings:
+    """Dependency providing API limits; tests can override it."""
+    return _API_SETTINGS
+
+
+def upload_too_large_detail(limits: Settings) -> str:
+    return f"The uploaded file exceeds the maximum allowed size of {format_byte_size(limits.max_upload_bytes)}."
+
+
+def too_many_pages_detail(limits: Settings) -> str:
+    return f"The PDF has too many pages. The maximum allowed is {limits.max_pdf_pages} pages."
+
+
+def _is_iso_date(value: str) -> bool:
+    if not _ISO_DATE_PATTERN.match(value):
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+async def _copy_upload_with_limit(
+    upload: UploadFile, destination: Any, max_bytes: int, too_large_detail: str
+) -> int:
+    """Copy an upload to ``destination`` in bounded chunks, enforcing ``max_bytes``.
+
+    Raises HTTP 413 as soon as the running total exceeds the limit, so memory
+    use stays at one chunk regardless of the upload size or Content-Length.
+    """
+    copied = 0
+    while True:
+        chunk = await upload.read(UPLOAD_COPY_CHUNK_BYTES)
+        if not chunk:
+            return copied
+        copied += len(chunk)
+        if copied > max_bytes:
+            raise HTTPException(status_code=413, detail=too_large_detail)
+        destination.write(chunk)
 
 
 def _ingestion_failure_detail(kind: IngestionFailureKind, result: Mapping[str, Any]) -> str:
@@ -151,19 +208,34 @@ def list_applicable_regulations_for_cohort(
                 "could not be read as a valid PDF document."
             )
         },
+        413: {"description": "The uploaded file or request body exceeds the maximum allowed size."},
         500: {"description": "Internal server error while processing or storing the regulation."},
+    },
+    form_limits={
+        "max_files": 1,
+        "max_fields": _API_SETTINGS.max_form_fields,
+        "max_part_size": _API_SETTINGS.max_form_part_size,
     },
 )
 async def ingest_regulation(
     file: UploadFile = File(...),
-    document_name: str = Form(...),
-    regulation_version: str = Form(...),
-    effective_date: str = Form(...),
-    applicable_batches: list[str] = Form(...),
-    applicable_programmes: list[str] = Form(...),
+    document_name: str = Form(..., max_length=_API_SETTINGS.max_document_name_length),
+    regulation_version: str = Form(..., max_length=_API_SETTINGS.max_regulation_version_length),
+    effective_date: str = Form(
+        ...,
+        max_length=_API_SETTINGS.max_effective_date_length,
+        description="Effective date in YYYY-MM-DD format.",
+    ),
+    applicable_batches: list[ApplicabilityValue] = Form(
+        ..., max_length=_API_SETTINGS.max_applicability_values
+    ),
+    applicable_programmes: list[ApplicabilityValue] = Form(
+        ..., max_length=_API_SETTINGS.max_applicability_values
+    ),
     upload_date: Optional[str] = Form(None),
     processing_status: Optional[str] = Form(None),
     db_path: Optional[str] = Depends(get_db_path),
+    limits: Settings = Depends(get_api_settings),
 ) -> RegulationIngestionResult:
     """Ingest a regulation PDF and metadata via the existing workflow service.
 
@@ -171,9 +243,11 @@ async def ingest_regulation(
     approved. Temporary upload files are cleaned up after processing, whether
     ingestion succeeds or fails.
 
-    Status codes: 200 on success; 400 for an unsupported file type or invalid
-    metadata; 422 for missing form fields or an unreadable/corrupted PDF; 500
-    for server-side failures (details are logged, never returned).
+    Status codes: 200 on success; 400 for an unsupported file type, blank
+    metadata, too many files/fields or an oversized form field; 413 when the
+    file exceeds the upload limit; 422 for missing/over-long fields, an invalid
+    effective date, an unreadable/corrupted PDF or too many pages; 500 for
+    server-side failures (details are logged, never returned).
     """
     filename = file.filename or ""
     content_type = (file.content_type or "").lower()
@@ -182,6 +256,18 @@ async def ingest_regulation(
 
     if not document_name.strip() or not regulation_version.strip() or not effective_date.strip():
         raise HTTPException(status_code=400, detail="Missing required metadata.")
+
+    if not _is_iso_date(effective_date.strip()):
+        raise HTTPException(
+            status_code=422,
+            detail=[
+                {
+                    "type": "value_error",
+                    "loc": ["body", "effective_date"],
+                    "msg": EFFECTIVE_DATE_FORMAT_DETAIL,
+                }
+            ],
+        )
 
     batches = [value.strip() for value in applicable_batches if value and value.strip()]
     programmes = [value.strip() for value in applicable_programmes if value and value.strip()]
@@ -205,8 +291,17 @@ async def ingest_regulation(
         suffix = Path(filename).suffix or ".pdf"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
             temp_path = Path(temp_file.name)
-            contents = await file.read()
-            temp_file.write(contents)
+            await _copy_upload_with_limit(
+                file, temp_file, limits.max_upload_bytes, upload_too_large_detail(limits)
+            )
+
+        # Reject oversized documents before running the full extraction workflow.
+        page_count = regulation_service.count_pdf_pages(temp_path)
+        if page_count is not None and page_count > limits.max_pdf_pages:
+            logger.warning(
+                "Rejected PDF with %d pages (limit %d).", page_count, limits.max_pdf_pages
+            )
+            raise HTTPException(status_code=422, detail=too_many_pages_detail(limits))
 
         result = regulation_service.ingest_regulation(
             pdf_path=temp_path,
