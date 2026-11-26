@@ -126,16 +126,41 @@ def approve_or_verify_regulation(
     )
 
 
-def list_regulations(db_path: str | Path | None = None) -> list[dict[str, Any]]:
-    """Return all stored regulations by delegating to the existing database layer."""
-    return database.get_all_regulations(db_path=db_path)
+def is_approved(regulation: Mapping[str, Any]) -> bool:
+    """Return True if the regulation is approved evidence.
+
+    Uses the database layer's own predicate, so what students may see through
+    the API is exactly what retrieval treats as approved evidence.
+    """
+    return database._is_approved_verification_status(regulation.get("verification_status"))
+
+
+def list_regulations(
+    db_path: str | Path | None = None, *, approved_only: bool = False
+) -> list[dict[str, Any]]:
+    """Return stored regulations by delegating to the existing database layer.
+
+    With ``approved_only`` (used for students), pending, rejected and any other
+    unapproved regulations are excluded.
+    """
+    regulations = database.get_all_regulations(db_path=db_path)
+    if approved_only:
+        return [regulation for regulation in regulations if is_approved(regulation)]
+    return regulations
 
 
 def get_regulation_details(
-    regulation_id: int, db_path: str | Path | None = None
+    regulation_id: int, db_path: str | Path | None = None, *, approved_only: bool = False
 ) -> dict[str, Any] | None:
-    """Return regulation details by delegating to the existing database layer."""
-    return database.get_regulation_by_id(regulation_id=regulation_id, db_path=db_path)
+    """Return regulation details by delegating to the existing database layer.
+
+    With ``approved_only`` (used for students), an unapproved regulation is
+    reported as missing (``None``), so its existence is not revealed.
+    """
+    regulation = database.get_regulation_by_id(regulation_id=regulation_id, db_path=db_path)
+    if regulation is not None and approved_only and not is_approved(regulation):
+        return None
+    return regulation
 
 
 def get_regulation_document_pages(

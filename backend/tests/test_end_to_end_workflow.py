@@ -25,6 +25,7 @@ Isolation guarantees:
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -44,6 +45,18 @@ from backend.app.api.v1 import query as query_routes
 from backend.app.api.v1 import regulations as regulation_routes
 from backend.app.main import app
 from backend.app.services import regulation_service
+from backend.tests.auth_support import sign_in_module_clients_as_administrator
+
+
+@pytest.fixture(autouse=True)
+def _signed_in_as_administrator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The endpoints exercised here require an administrator since Stage 4.
+
+    Every client this module creates sends the token of a real administrator
+    account created for the test (see ``backend/tests/auth_support.py``).
+    """
+    sign_in_module_clients_as_administrator(sys.modules[__name__], app, tmp_path, monkeypatch)
+
 
 API = "/api/v1"
 

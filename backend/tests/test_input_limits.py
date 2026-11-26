@@ -14,6 +14,7 @@ import asyncio
 import dataclasses
 import json
 import math
+import sys
 import tempfile as std_tempfile
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -38,6 +39,19 @@ from backend.app.core.config import MIB, Settings, get_settings
 from backend.app.core.limits import BodyLimit, RequestSizeLimitMiddleware
 from backend.app.main import app
 from backend.app.services import query_service, regulation_service
+from backend.tests.auth_support import SignedInAccount, sign_in_module_clients_as_administrator
+
+
+@pytest.fixture(autouse=True)
+def _signed_in_as_administrator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SignedInAccount:
+    """The endpoints exercised here require an administrator since Stage 4.
+
+    Every client this module creates sends the token of a real administrator
+    account created for the test (see ``backend/tests/auth_support.py``).
+    Tests that drive the ASGI app directly add the returned account's header.
+    """
+    return sign_in_module_clients_as_administrator(sys.modules[__name__], app, tmp_path, monkeypatch)
+
 
 LIMITS = get_settings()
 ASK_URL = "/api/v1/query/ask"
@@ -432,7 +446,8 @@ def test_streamed_body_without_content_length_stops_reading_at_limit(env: Env) -
     assert env.generation_calls == []
 
 
-def test_streamed_body_under_limit_is_passed_through_intact(env: Env) -> None:
+def test_streamed_body_under_limit_is_passed_through_intact(env: Env, _signed_in_as_administrator: SignedInAccount) -> None:
+    authorization = _signed_in_as_administrator.headers["Authorization"].encode()
     payload = json.dumps(
         {"question": "Streamed attendance question?", "admission_batch": BATCH, "programme": PROGRAMME}
     ).encode()
@@ -443,7 +458,8 @@ def test_streamed_body_under_limit_is_passed_through_intact(env: Env) -> None:
     async def receive() -> dict[str, Any]:
         return queue.pop(0) if queue else {"type": "http.disconnect"}
 
-    messages = _run_asgi(app, _http_scope(ASK_URL, [(b"content-type", b"application/json")]), receive)
+    scope = _http_scope(ASK_URL, [(b"content-type", b"application/json"), (b"authorization", authorization)])
+    messages = _run_asgi(app, scope, receive)
 
     assert _status_of(messages) == 200
     assert env.generation_calls[0]["question"] == "Streamed attendance question?"

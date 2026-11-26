@@ -950,17 +950,19 @@ def test_openapi_documents_login_and_me() -> None:
         assert name not in str(components["UserProfileResponse"])
 
 
-def test_existing_routes_remain_unprotected(env: Env, tmp_path: Path) -> None:
+def test_login_token_opens_routes_protected_in_stage_4(env: Env) -> None:
+    """Public routes stay public; protected routes need the token issued by /auth/login."""
+    init_database(env.db_path)
+    student = env.add_user("stage4@uni.edu", "student", admission_batch="2024", programme="BSc")
     main_app.dependency_overrides[regulation_routes.get_db_path] = lambda: str(env.db_path)
     try:
         assert env.client.get("/").status_code == 200
         assert env.client.get("/api/v1/health").status_code == 200
-        assert env.client.get("/api/v1/regulations").status_code == 200
-        assert env.client.get("/api/v1/cohorts/2024/BSc/regulations").status_code == 200
+        _assert_unauthenticated(env.client.get("/api/v1/regulations"))
+        _assert_unauthenticated(env.client.get("/api/v1/cohorts/2024/BSc/regulations"))
+
+        headers = {"Authorization": f"Bearer {env.token(student.email)}"}
+        assert env.client.get("/api/v1/regulations", headers=headers).status_code == 200
+        assert env.client.get("/api/v1/cohorts/2024/BSc/regulations", headers=headers).status_code == 200
     finally:
         main_app.dependency_overrides.pop(regulation_routes.get_db_path, None)
-
-    paths = env.client.get("/openapi.json").json()["paths"]
-    for path, operations in paths.items():
-        if path != ME_URL:
-            assert all("security" not in operation for operation in operations.values()), path

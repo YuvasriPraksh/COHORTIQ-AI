@@ -7,6 +7,8 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from backend.app.api.deps import AuthenticatedUser, get_current_user
+from backend.app.api.permissions import COHORT_SCOPED_RESPONSES, ensure_cohort_access
 from backend.app.schemas.query import GroundedAnswerResponse, StudentQuestionRequest
 from backend.app.services import query_service
 
@@ -39,14 +41,21 @@ def get_db_path() -> Optional[str]:
             )
         },
         400: {"description": "question, admission_batch, or programme is blank."},
+        **COHORT_SCOPED_RESPONSES,
         500: {"description": "Unexpected internal server error. Details are logged, never returned."},
     },
 )
 def ask_student_question(
     request: StudentQuestionRequest,
     db_path: Optional[str] = Depends(get_db_path),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> GroundedAnswerResponse:
     """Answer a cohort-specific student question using approved evidence.
+
+    Requires a signed-in user. A student may only ask about the admission batch
+    and programme stored on their account: a request naming any other cohort is
+    refused with 403, and retrieval always uses the stored values. Administrators
+    may ask about any cohort.
 
     Delegates to the existing query service/workflow to preserve cohort
     applicability filtering, approved-only retrieval, no-evidence handling,
@@ -71,6 +80,9 @@ def ask_student_question(
             status_code=400,
             detail="question, admission_batch, and programme are required.",
         )
+
+    # Retrieval filters (approved-only, cohort applicability) run on these values.
+    admission_batch, programme = ensure_cohort_access(user, admission_batch, programme)
 
     try:
         result = query_service.answer_student_regulation_question(

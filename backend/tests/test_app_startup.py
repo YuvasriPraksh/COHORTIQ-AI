@@ -9,6 +9,7 @@ the real project database file was not created, modified or deleted.
 from __future__ import annotations
 
 import sqlite3
+import sys
 from contextlib import closing
 from pathlib import Path
 from typing import Iterator
@@ -26,6 +27,18 @@ from app.database import (
     insert_regulation,
 )
 from backend.app.main import app
+from backend.tests.auth_support import sign_in_module_clients_as_administrator
+
+
+@pytest.fixture(autouse=True)
+def _signed_in_as_administrator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The endpoints exercised here require an administrator since Stage 4.
+
+    Every client this module creates sends the token of a real administrator
+    account created for the test (see ``backend/tests/auth_support.py``).
+    """
+    sign_in_module_clients_as_administrator(sys.modules[__name__], app, tmp_path, monkeypatch)
+
 
 API = "/api/v1"
 REQUIRED_TABLES = {"regulations", "document_pages"}

@@ -1,4 +1,14 @@
-"""Regulation and cohort applicability API routes."""
+"""Regulation and cohort applicability API routes.
+
+Access (see :mod:`backend.app.api.permissions`):
+
+- Ingestion and verification changes: administrators only.
+- Regulation list, details and pages: any signed-in user, but students see
+  approved regulations only; an unapproved regulation is reported to a student
+  exactly like a missing one (404).
+- Cohort regulations: administrators may view any cohort, students only the
+  cohort stored on their account.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +24,14 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import StringConstraints
 
 from app.database import get_applicable_regulations
+from backend.app.api.deps import AuthenticatedUser, get_current_user, require_administrator
+from backend.app.api.permissions import (
+    ADMINISTRATOR_ONLY_RESPONSES,
+    COHORT_SCOPED_RESPONSES,
+    UNAUTHENTICATED_RESPONSE,
+    ensure_cohort_access,
+    is_administrator,
+)
 from backend.app.core.config import MIB, Settings, format_byte_size, get_settings
 from backend.app.schemas.regulations import (
     DocumentPageListResponse,
@@ -130,43 +148,69 @@ def get_db_path() -> Optional[str]:
     return None
 
 
-@router.get("/regulations", response_model=RegulationListResponse)
-def list_regulations(db_path: Optional[str] = Depends(get_db_path)) -> RegulationListResponse:
-    """Return the list of stored regulations."""
-    regulations = regulation_service.list_regulations(db_path=db_path)
+REGULATION_NOT_FOUND_DETAIL = "Regulation not found"
+
+_HIDDEN_OR_MISSING_RESPONSE: dict[int | str, dict] = {
+    404: {"description": "Regulation not found (also returned to students for unapproved regulations)."}
+}
+
+
+@router.get(
+    "/regulations",
+    response_model=RegulationListResponse,
+    responses=UNAUTHENTICATED_RESPONSE,
+)
+def list_regulations(
+    db_path: Optional[str] = Depends(get_db_path),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> RegulationListResponse:
+    """Return stored regulations: all for administrators, approved only for students."""
+    regulations = regulation_service.list_regulations(
+        db_path=db_path, approved_only=not is_administrator(user)
+    )
     return RegulationListResponse(regulations=regulations)
 
 
-@router.get("/regulations/{regulation_id}", response_model=RegulationDetailResponse)
+@router.get(
+    "/regulations/{regulation_id}",
+    response_model=RegulationDetailResponse,
+    responses={**UNAUTHENTICATED_RESPONSE, **_HIDDEN_OR_MISSING_RESPONSE},
+)
 def get_regulation(
-    regulation_id: int, db_path: Optional[str] = Depends(get_db_path)
+    regulation_id: int,
+    db_path: Optional[str] = Depends(get_db_path),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> RegulationDetailResponse:
-    """Return regulation details or 404 if the regulation does not exist."""
+    """Return regulation details, or 404 if it does not exist or is hidden from the user."""
     regulation = regulation_service.get_regulation_details(
-        regulation_id=regulation_id, db_path=db_path
+        regulation_id=regulation_id, db_path=db_path, approved_only=not is_administrator(user)
     )
     if regulation is None:
-        raise HTTPException(status_code=404, detail="Regulation not found")
+        raise HTTPException(status_code=404, detail=REGULATION_NOT_FOUND_DETAIL)
     return RegulationDetailResponse(regulation=regulation)
 
 
 @router.get(
     "/regulations/{regulation_id}/pages",
     response_model=DocumentPageListResponse,
+    responses={**UNAUTHENTICATED_RESPONSE, **_HIDDEN_OR_MISSING_RESPONSE},
 )
 def get_regulation_pages(
-    regulation_id: int, db_path: Optional[str] = Depends(get_db_path)
+    regulation_id: int,
+    db_path: Optional[str] = Depends(get_db_path),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> DocumentPageListResponse:
     """Return stored document pages for a regulation.
 
-    Returns 404 when the regulation does not exist. An existing regulation with
-    zero extracted pages returns an empty list.
+    Returns 404 when the regulation does not exist, or (for students) when it
+    is not approved. An existing regulation with zero extracted pages returns
+    an empty list.
     """
     regulation = regulation_service.get_regulation_details(
-        regulation_id=regulation_id, db_path=db_path
+        regulation_id=regulation_id, db_path=db_path, approved_only=not is_administrator(user)
     )
     if regulation is None:
-        raise HTTPException(status_code=404, detail="Regulation not found")
+        raise HTTPException(status_code=404, detail=REGULATION_NOT_FOUND_DETAIL)
 
     pages = regulation_service.get_regulation_document_pages(
         regulation_id=regulation_id, db_path=db_path
@@ -177,18 +221,22 @@ def get_regulation_pages(
 @router.get(
     "/cohorts/{admission_batch}/{programme}/regulations",
     response_model=RegulationListResponse,
+    responses=COHORT_SCOPED_RESPONSES,
 )
 def list_applicable_regulations_for_cohort(
     admission_batch: str,
     programme: str,
     db_path: Optional[str] = Depends(get_db_path),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> RegulationListResponse:
     """Return approved regulations applicable to the specified cohort.
 
     Uses existing database logic to preserve approved-only and cohort
     applicability filtering (student-facing results exclude pending/unapproved
-    regulations).
+    regulations). Students may only request the cohort stored on their account
+    (403 otherwise); administrators may request any cohort.
     """
+    admission_batch, programme = ensure_cohort_access(user, admission_batch, programme)
     regulations = get_applicable_regulations(
         admission_batch=admission_batch,
         programme=programme,
@@ -200,7 +248,9 @@ def list_applicable_regulations_for_cohort(
 @router.post(
     "/regulations/ingest",
     response_model=RegulationIngestionResult,
+    dependencies=[Depends(require_administrator)],
     responses={
+        **ADMINISTRATOR_ONLY_RESPONSES,
         400: {"description": "Unsupported file type or missing/invalid regulation metadata."},
         422: {
             "description": (
@@ -237,7 +287,7 @@ async def ingest_regulation(
     db_path: Optional[str] = Depends(get_db_path),
     limits: Settings = Depends(get_api_settings),
 ) -> RegulationIngestionResult:
-    """Ingest a regulation PDF and metadata via the existing workflow service.
+    """Ingest a regulation PDF and metadata via the existing workflow service (administrators only).
 
     Newly uploaded regulations remain pending and are never automatically
     approved. Temporary upload files are cleaned up after processing, whether
@@ -343,7 +393,9 @@ async def ingest_regulation(
 @router.patch(
     "/regulations/{regulation_id}/verification",
     response_model=VerificationUpdateResponse,
+    dependencies=[Depends(require_administrator)],
     responses={
+        **ADMINISTRATOR_ONLY_RESPONSES,
         400: {"description": "verification_status is blank or not one of: approved, pending, rejected."},
         404: {"description": "Regulation not found."},
         500: {"description": "Internal server error. Details are logged, never returned."},
@@ -354,7 +406,7 @@ def update_regulation_verification(
     request: VerificationUpdateRequest,
     db_path: Optional[str] = Depends(get_db_path),
 ) -> VerificationUpdateResponse:
-    """Explicitly update a regulation's verification status.
+    """Explicitly update a regulation's verification status (administrators only).
 
     Verification changes occur only through explicit requests and never as part
     of ingestion. Status codes: 200 when updated; 400 for a blank or
@@ -385,7 +437,7 @@ def update_regulation_verification(
         if outcome == "updated":
             return VerificationUpdateResponse(**result)
         if outcome == "not_found":
-            raise HTTPException(status_code=404, detail="Regulation not found")
+            raise HTTPException(status_code=404, detail=REGULATION_NOT_FOUND_DETAIL)
         logger.error(
             "Verification update failed (regulation_id=%s, requested_status=%r, outcome=%r): %s",
             regulation_id,

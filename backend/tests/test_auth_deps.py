@@ -16,7 +16,6 @@ from typing import Any, Iterator, Optional
 import jwt
 import pytest
 from fastapi import Depends, FastAPI
-from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from app.database import init_database
@@ -360,47 +359,26 @@ def test_authenticated_user_carries_no_credentials() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Scope guard: existing routes are not protected yet (Stage 4)
+# Scope: where these dependencies are attached (Stage 4)
 # --------------------------------------------------------------------------- #
 
 
-def test_existing_routes_remain_unprotected_in_stage_1(tmp_path: Path) -> None:
+def test_dependencies_are_attached_exactly_as_the_permission_inventory_says(tmp_path: Path) -> None:
+    """The full route inventory guard lives in test_route_permissions.py."""
+    from backend.app.api.permissions import ROUTE_PERMISSIONS, Access
+    from backend.tests.test_route_permissions import ROUTES
+
     db_path = tmp_path / "scope.db"
     init_database(db_path)
     main_app.dependency_overrides[regulation_routes.get_db_path] = lambda: str(db_path)
     try:
         client = TestClient(main_app)
         assert client.get("/api/v1/health").status_code == 200
-        assert client.get("/api/v1/regulations").status_code == 200
+        assert client.get("/api/v1/regulations").status_code == 401  # protected since Stage 4
     finally:
         main_app.dependency_overrides.pop(regulation_routes.get_db_path, None)
 
-    # Since Stage 3 only GET /api/v1/auth/me requires a token.
-    schema = TestClient(main_app).get("/openapi.json").json()
-    secured = {
-        (path, method)
-        for path, operations in schema["paths"].items()
-        for method, operation in operations.items()
-        if operation.get("security")
-    }
-    assert secured == {("/api/v1/auth/me", "get")}
-    # Included routers are nested (FastAPI keeps them as wrappers), so walk the
-    # whole tree, including nested dependencies such as require_role(...).
-    def api_routes(routes: list[Any]) -> Iterator[APIRoute]:
-        for route in routes:
-            if isinstance(route, APIRoute):
-                yield route
-            else:
-                nested = getattr(route, "original_router", None) or getattr(route, "router", None)
-                if nested is not None:
-                    yield from api_routes(nested.routes)
-
-    def calls(dependant: Any) -> Iterator[Any]:
-        for dependency in dependant.dependencies:
-            yield dependency.call
-            yield from calls(dependency)
-
-    routes = list(api_routes(main_app.routes))
-    assert len(routes) == len(schema["paths"]), "the route walk must reach every documented route"
-    protected_routes = {route.path for route in routes if deps.get_current_user in set(calls(route.dependant))}
-    assert protected_routes == {"/auth/me"}
+    authenticated = {(route.method, route.path) for route in ROUTES if deps.get_current_user in route.calls}
+    administrator_only = {(route.method, route.path) for route in ROUTES if deps.require_administrator in route.calls}
+    assert authenticated == {key for key, access in ROUTE_PERMISSIONS.items() if access is not Access.PUBLIC}
+    assert administrator_only == {key for key, access in ROUTE_PERMISSIONS.items() if access is Access.ADMINISTRATOR}

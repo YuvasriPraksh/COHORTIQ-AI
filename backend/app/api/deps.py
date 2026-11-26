@@ -19,7 +19,8 @@ database. If no store is available, or the lookup fails, authentication fails
 closed with HTTP 503 for requests that present a valid token. There is no
 fallback, placeholder or development user.
 
-These dependencies are not yet attached to any existing route.
+Which routes use these dependencies is recorded in
+:mod:`backend.app.api.permissions`.
 """
 
 from __future__ import annotations
@@ -50,6 +51,7 @@ __all__ = [
     "get_auth_settings",
     "get_current_user",
     "get_user_store",
+    "require_administrator",
     "require_role",
 ]
 
@@ -157,3 +159,11 @@ def require_role(*allowed_roles: str) -> Callable[..., AuthenticatedUser]:
 
     dependency.__name__ = "require_role_" + "_or_".join(sorted(allowed))
     return dependency
+
+
+require_administrator = require_role(ROLE_ADMINISTRATOR)
+"""Shared administrator-only dependency.
+
+Routes use this single instance (rather than calling ``require_role`` again) so
+the route inventory guard can verify administrator-only routes by identity.
+"""

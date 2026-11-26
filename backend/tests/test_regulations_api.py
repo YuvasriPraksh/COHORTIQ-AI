@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.database import (
@@ -14,6 +16,17 @@ from app.database import (
 )
 from backend.app.api.v1.regulations import get_db_path
 from backend.app.main import app
+from backend.tests.auth_support import sign_in_module_clients_as_administrator
+
+
+@pytest.fixture(autouse=True)
+def _signed_in_as_administrator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The endpoints exercised here require an administrator since Stage 4.
+
+    Every client this module creates sends the token of a real administrator
+    account created for the test (see ``backend/tests/auth_support.py``).
+    """
+    sign_in_module_clients_as_administrator(sys.modules[__name__], app, tmp_path, monkeypatch)
 
 
 def _create_test_db(tmp_path: Path) -> Path:
