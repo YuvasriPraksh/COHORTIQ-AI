@@ -5,8 +5,12 @@
 /** API origin. Empty in development (the Vite proxy forwards /api). */
 export const API_BASE_URL: string = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
+export const DEFAULT_TIMEOUT_MS = 15_000;
+export const ASK_TIMEOUT_MS = 35_000;
+
 export type ApiErrorKind =
   | "network"
+  | "timeout"
   | "unauthorized"
   | "forbidden"
   | "invalid"
@@ -65,7 +69,13 @@ function errorFor(status: number, detail: string | null): ApiError {
 
 export async function apiRequest<T>(
   path: string,
-  options: { method?: "GET" | "POST"; body?: unknown; token?: string | null; signal?: AbortSignal } = {},
+  options: {
+    method?: "GET" | "POST";
+    body?: unknown;
+    token?: string | null;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  } = {},
 ): Promise<T> {
   const headers: Record<string, string> = { Accept: "application/json" };
   if (options.body !== undefined) {
@@ -75,19 +85,50 @@ export async function apiRequest<T>(
     headers.Authorization = `Bearer ${options.token}`;
   }
 
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timer = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  const externalSignal = options.signal;
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      window.clearTimeout(timer);
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }
+    externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+  }
+
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
       method: options.method ?? "GET",
       headers,
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
-      signal: options.signal,
+      signal: controller.signal,
     });
   } catch (error) {
+    if (externalSignal?.aborted) {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }
+    if (timedOut) {
+      throw new ApiError(
+        "timeout",
+        "The request took too long to finish. Please try again.",
+        null,
+      );
+    }
     if (error instanceof DOMException && error.name === "AbortError") {
       throw error;
     }
     throw new ApiError("network", "We couldn't reach the CohortIQ server. Check your connection and try again.", null);
+  } finally {
+    window.clearTimeout(timer);
+    externalSignal?.removeEventListener("abort", onExternalAbort);
   }
 
   let payload: unknown = null;

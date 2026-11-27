@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 
 import type { AskResponse } from "../api/types";
+import { formatValidationMessaging, resolveAnswerVerdict } from "../utils/answerFormatting";
 import { Citations, SourcesSearched } from "./Evidence";
 import { Notice } from "./Notice";
 import { RouteBadge } from "./RouteBadge";
@@ -8,29 +9,28 @@ import { RouteBadge } from "./RouteBadge";
 export type AnswerState =
   | { kind: "idle" }
   | { kind: "loading"; question: string }
+  | { kind: "cancelled"; question: string }
   | { kind: "error"; question: string; title: string; message: string }
   | { kind: "result"; question: string; response: AskResponse };
 
-const STATUS_COPY: Record<string, { title: string; tone: "answered" | "abstained" | "conflict" }> = {
-  answered: { title: "Answer", tone: "answered" },
-  insufficient_evidence: { title: "No grounded answer", tone: "abstained" },
-  conflicting_evidence: { title: "The regulations disagree", tone: "conflict" },
-};
-
-function titleFor(response: AskResponse): string {
-  if (response.route?.route === "out_of_scope") return "Outside what I can answer";
-  if (response.route?.route === "clarify") return "I need your cohort first";
-  return (STATUS_COPY[response.status] ?? STATUS_COPY.insufficient_evidence!).title;
-}
-
-export function AnswerView({ state, onRetry }: { state: AnswerState; onRetry: () => void }) {
+export function AnswerView({
+  state,
+  onRetry,
+  onCancel,
+}: {
+  state: AnswerState;
+  onRetry: () => void;
+  onCancel: () => void;
+}) {
   const headingRef = useRef<HTMLHeadingElement>(null);
   const errorRef = useRef<HTMLDivElement>(null);
+  const cancelledRef = useRef<HTMLDivElement>(null);
 
-  // Move focus to the new answer or error so keyboard and screen-reader users land on it.
+  // Move focus cleanly once on terminal states; loading relies on its status region.
   useEffect(() => {
     if (state.kind === "result") headingRef.current?.focus();
     if (state.kind === "error") errorRef.current?.focus();
+    if (state.kind === "cancelled") cancelledRef.current?.focus();
   }, [state]);
 
   if (state.kind === "idle") {
@@ -45,6 +45,11 @@ export function AnswerView({ state, onRetry }: { state: AnswerState; onRetry: ()
         <p className="empty__text">
           Answers come only from the approved regulations for your cohort, with the pages they rely on.
         </p>
+        <ul className="empty__pillars" aria-label="How CohortIQ answers">
+          <li>Scoped to your admission batch and programme</li>
+          <li>Drawn only from administrator-approved documents</li>
+          <li>Abstains plainly when evidence is missing</li>
+        </ul>
       </div>
     );
   }
@@ -53,14 +58,43 @@ export function AnswerView({ state, onRetry }: { state: AnswerState; onRetry: ()
     return (
       <div className="answer answer--loading" aria-busy="true">
         <p className="answer__question">{state.question}</p>
-        <p className="loading-text" role="status">
-          Finding the regulations that apply to you…
-        </p>
+        <div className="loading-bar">
+          <p className="loading-text" role="status" aria-live="polite">
+            Finding the approved regulations that apply to you…
+          </p>
+          <button
+            type="button"
+            className="button button--ghost button--compact"
+            onClick={onCancel}
+            aria-label="Cancel loading answer"
+          >
+            Cancel
+          </button>
+        </div>
         <div className="skeleton" aria-hidden="true">
           <span />
           <span />
           <span />
         </div>
+      </div>
+    );
+  }
+
+  if (state.kind === "cancelled") {
+    return (
+      <div className="answer answer--cancelled" ref={cancelledRef} tabIndex={-1}>
+        <p className="answer__question">{state.question}</p>
+        <Notice
+          tone="info"
+          title="Request cancelled"
+          action={
+            <button type="button" className="button button--ghost" onClick={onRetry}>
+              Ask again
+            </button>
+          }
+        >
+          Your question is still in the box if you want to edit or send it again.
+        </Notice>
       </div>
     );
   }
@@ -85,29 +119,42 @@ export function AnswerView({ state, onRetry }: { state: AnswerState; onRetry: ()
   }
 
   const { response } = state;
-  const tone = (STATUS_COPY[response.status] ?? STATUS_COPY.insufficient_evidence!).tone;
-  const limitations = response.answer.limitations;
+  const verdict = resolveAnswerVerdict(response);
+  const validation = formatValidationMessaging(
+    response.answer.limitations,
+    response.validation_issues,
+    response.status,
+  );
 
   return (
-    <article className={`answer answer--${tone}`} aria-labelledby="answer-heading">
+    <article className={`answer answer--${verdict.tone}`} aria-labelledby="answer-heading">
       <p className="answer__question">{state.question}</p>
       <div className="answer__head">
-        <h2 id="answer-heading" ref={headingRef} tabIndex={-1} className="answer__title">
-          {titleFor(response)}
-        </h2>
-        {response.route ? <RouteBadge route={response.route} /> : null}
+        <div className="answer__title-row">
+          <h2 id="answer-heading" ref={headingRef} tabIndex={-1} className="answer__title">
+            {verdict.title}
+          </h2>
+          <span className={`verdict verdict--${verdict.tone}`}>{verdict.badge}</span>
+        </div>
+        {response.route ? (
+          <RouteBadge
+            route={response.route}
+            answerStatus={response.status}
+            hasCitations={verdict.hasCitations}
+          />
+        ) : null}
       </div>
       <p className="answer__text">{response.answer.answer}</p>
-      {limitations ? (
+      {validation.limitationNote ? (
         <p className="answer__limitations">
           <strong>Note: </strong>
-          {limitations}
+          {validation.limitationNote}
         </p>
       ) : null}
-      {response.validation_issues.length ? (
-        <Notice tone="warning" title="Some citations were removed">
+      {validation.issues.length ? (
+        <Notice tone="warning" title={validation.issuesTitle}>
           <ul className="plain-list">
-            {response.validation_issues.map((issue) => (
+            {validation.issues.map((issue) => (
               <li key={issue}>{issue}</li>
             ))}
           </ul>

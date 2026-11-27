@@ -1,4 +1,4 @@
-import { apiRequest } from "./client";
+import { ASK_TIMEOUT_MS, apiRequest } from "./client";
 import type { AskRequest, AskResponse, TokenResponse, UserProfile } from "./types";
 
 const API = "/api/v1";
@@ -12,5 +12,11 @@ export function fetchProfile(token: string, signal?: AbortSignal): Promise<UserP
 }
 
 export function askQuestion(token: string, request: AskRequest, signal?: AbortSignal): Promise<AskResponse> {
-  return apiRequest<AskResponse>(`${API}/query/ask`, { method: "POST", body: request, token, signal });
+  return apiRequest<AskResponse>(`${API}/query/ask`, {
+    method: "POST",
+    body: request,
+    token,
+    signal,
+    timeoutMs: ASK_TIMEOUT_MS,
+  });
 }

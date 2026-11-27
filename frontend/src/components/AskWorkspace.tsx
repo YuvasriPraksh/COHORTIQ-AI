@@ -17,6 +17,7 @@ const ERROR_TITLES: Record<Exclude<ApiErrorKind, "unauthorized">, string> = {
   forbidden: "This cohort isn't available to you",
   invalid: "Please check your question",
   too_large: "Your question is too long",
+  timeout: "CohortIQ timed out",
   unavailable: "CohortIQ is temporarily unavailable",
   network: "Can't reach CohortIQ",
   server: "Something went wrong",
@@ -67,6 +68,13 @@ export function AskWorkspace({ token, user }: { token: string; user: UserProfile
     } finally {
       if (inFlight.current === controller) inFlight.current = null;
     }
+  }
+
+  function cancelInFlight() {
+    if (!inFlight.current) return;
+    inFlight.current.abort();
+    inFlight.current = null;
+    setState({ kind: "cancelled", question: lastQuestion.current });
   }
 
   function onSubmit(event: FormEvent) {
@@ -142,10 +150,22 @@ export function AskWorkspace({ token, user }: { token: string; user: UserProfile
             <span id={hintId} className="ask__hint">
               {question.length}/{MAX_QUESTION_LENGTH} · Ctrl + Enter to ask
             </span>
-            <button type="submit" className="button button--primary" disabled={!canAsk}>
-              {loading ? <span className="spinner" aria-hidden="true" /> : null}
-              {loading ? "Asking…" : "Ask"}
-            </button>
+            <div className="ask__actions">
+              {loading ? (
+                <button
+                  type="button"
+                  className="button button--ghost"
+                  onClick={cancelInFlight}
+                  aria-label="Cancel request"
+                >
+                  Cancel
+                </button>
+              ) : null}
+              <button type="submit" className="button button--primary" disabled={!canAsk}>
+                {loading ? <span className="spinner" aria-hidden="true" /> : null}
+                {loading ? "Asking…" : "Ask"}
+              </button>
+            </div>
           </div>
         </form>
 
@@ -160,8 +180,12 @@ export function AskWorkspace({ token, user }: { token: string; user: UserProfile
         ) : null}
       </section>
 
-      <section className="panel result" aria-live="polite">
-        <AnswerView state={state} onRetry={() => void submit(lastQuestion.current)} />
+      <section className="panel result">
+        <AnswerView
+          state={state}
+          onRetry={() => void submit(lastQuestion.current)}
+          onCancel={cancelInFlight}
+        />
       </section>
     </div>
   );

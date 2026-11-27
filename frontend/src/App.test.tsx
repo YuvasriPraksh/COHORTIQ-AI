@@ -156,10 +156,13 @@ describe("sign in → ask → answer", () => {
     expect(screen.getByText(ANSWERED.answer.answer)).toBeInTheDocument();
     expect(screen.getByText("Searched your regulations")).toBeInTheDocument();
     const evidence = screen.getByRole("region", { name: /Evidence/ });
-    expect(within(evidence).getByText(/SMVEC · version 2023/)).toBeInTheDocument();
-    expect(within(evidence).getByText(/page 21/)).toBeInTheDocument();
+    expect(within(evidence).getByText("SMVEC")).toBeInTheDocument();
+    expect(within(evidence).getByText("v2023")).toBeInTheDocument();
+    expect(within(evidence).getByText("Page 21")).toBeInTheDocument();
     expect(within(evidence).getByText(ANSWERED.citations[0]!.relevant_supporting_text!)).toBeInTheDocument();
     expect(screen.getByText("Passages searched")).toBeInTheDocument();
+    expect(screen.getByText("Grounded answer")).toBeInTheDocument();
+    expect(screen.queryByText(/match 15\.0/i)).not.toBeInTheDocument();
 
     expect(calls[0]).toMatchObject({ url: "/api/v1/auth/login", body: { email: "asha@uni.edu", password: "Correct-horse-9" } });
     const askCall = calls.find((call) => call.url === "/api/v1/query/ask")!;
@@ -234,6 +237,54 @@ describe("answer states", () => {
     expect(await screen.findByText("Some citations were removed")).toBeInTheDocument();
     expect(screen.getByText("Citation 2 did not match the retrieved evidence.")).toBeInTheDocument();
   });
+
+  it("sanitizes raw chunk IDs, deduplicates validation notices, and adjusts route tone when downgraded", async () => {
+    const downgraded: AskResponse = {
+      status: "insufficient_evidence",
+      answer: {
+        answer: "The available retrieved evidence is insufficient to provide a fully grounded answer with valid supporting citations.",
+        status: "insufficient_evidence",
+        citations: [],
+        limitations:
+          "Citation validation failed: no valid supporting citations matched the original retrieved evidence. Rejected citation for chunk_id '1-p21-c61' because supporting text could not be matched to evidence.",
+      },
+      citations: [],
+      validation_issues: [
+        "Rejected citation for chunk_id '1-p21-c61' because supporting text could not be matched to evidence.",
+      ],
+      retrieval: ANSWERED.retrieval,
+      route: ANSWERED.route,
+    };
+    mockApi({ [LOGIN]: TOKEN, [ME]: { status: 200, body: STUDENT }, [ASK]: { status: 200, body: downgraded } });
+
+    await ask(await signIn(), "What attendance do I need?");
+
+    expect(await screen.findByRole("heading", { name: "No grounded answer" })).toBeInTheDocument();
+    expect(screen.getByText("References could not be verified")).toBeInTheDocument();
+    expect(
+      screen.getByText("A draft reference could not be matched to the regulation text and was removed."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/chunk_id/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/1-p21-c61/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Note:$/)).not.toBeInTheDocument();
+    const routeEl = screen.getByText("Searched your regulations").closest(".route");
+    expect(routeEl).not.toHaveClass("route--good");
+  });
+
+  it("never shows a grounded verdict badge when answered has zero citations", async () => {
+    const noCitations: AskResponse = {
+      ...ANSWERED,
+      citations: [],
+      answer: { ...ANSWERED.answer, citations: [] },
+    };
+    mockApi({ [LOGIN]: TOKEN, [ME]: { status: 200, body: STUDENT }, [ASK]: { status: 200, body: noCitations } });
+
+    await ask(await signIn(), "What attendance do I need?");
+
+    expect(await screen.findByRole("heading", { name: "Answer without citations" })).toBeInTheDocument();
+    expect(screen.getByText("No citations attached")).toBeInTheDocument();
+    expect(screen.queryByText("Grounded answer")).not.toBeInTheDocument();
+  });
 });
 
 describe("errors", () => {
@@ -292,6 +343,52 @@ describe("errors", () => {
 
     await ask(user, "And again?");
     expect(await screen.findByText("Can't reach CohortIQ")).toBeInTheDocument();
+  });
+
+  it("cancels an in-flight question while preserving the typed text", async () => {
+    const fetchMock = vi.fn(async (url: string, init: RequestInit = {}) => {
+      if (url === "/api/v1/auth/login") {
+        return new Response(JSON.stringify(TOKEN.body), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url === "/api/v1/auth/me") {
+        return new Response(JSON.stringify(STUDENT), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url === "/api/v1/query/ask") {
+        return new Promise<Response>((_, reject) => {
+          init.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+        });
+      }
+      throw new Error(`Unexpected ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const user = await signIn();
+    await ask(user, "What is the attendance rule?");
+    // Both cancel buttons have distinct accessible names that keep the visible word "Cancel".
+    const cancelRequest = await screen.findByRole("button", { name: "Cancel request" });
+    expect(screen.getByRole("button", { name: "Cancel loading answer" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+    await user.click(cancelRequest);
+
+    expect(await screen.findByText("Request cancelled")).toBeInTheDocument();
+    expect(screen.getByLabelText("Your question")).toHaveValue("What is the attendance rule?");
+  });
+
+  it("reports a timeout error when a request stalls past its client timeout", async () => {
+    const { apiRequest, ApiError } = await import("./api/client");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (_url: string, init?: RequestInit) =>
+          new Promise<Response>((_, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+          }),
+      ),
+    );
+
+    await expect(apiRequest("/api/v1/query/ask", { method: "POST", timeoutMs: 25 })).rejects.toSatisfy(
+      (err: unknown) => err instanceof ApiError && err.kind === "timeout",
+    );
   });
 });
 
