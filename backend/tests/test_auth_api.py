@@ -177,6 +177,32 @@ def test_successful_login_returns_bearer_token(env: Env, role: str) -> None:
     assert lifetime == timedelta(minutes=env.settings.access_token_expire_minutes)
 
 
+def test_selected_role_must_match_the_persisted_role_and_email_domain(env: Env) -> None:
+    student = env.add_user("asha@student.smvec.ac.in")
+    staff = env.add_user("teacher@staff.smvec.ac.in", "staff")
+
+    accepted = env.client.post(
+        LOGIN_URL,
+        json={"email": student.email, "password": env.passwords[student.email], "selected_role": "student"},
+    )
+    wrong_role = env.client.post(
+        LOGIN_URL,
+        json={"email": student.email, "password": env.passwords[student.email], "selected_role": "administrator"},
+    )
+    wrong_domain = env.client.post(
+        LOGIN_URL,
+        json={"email": "teacher@staff.smvec.ac.in", "password": env.passwords[staff.email], "selected_role": "student"},
+    )
+
+    assert accepted.status_code == 200
+    for denied in (wrong_role, wrong_domain):
+        assert denied.status_code == 403
+        assert denied.json() == {
+            "detail": "Access denied. This account does not match the selected role or permitted email domain."
+        }
+        assert denied.headers["cache-control"] == "no-store"
+
+
 def test_token_is_hs256_and_carries_no_role(env: Env) -> None:
     user = env.add_user("claims@uni.edu", "administrator")
 
@@ -921,7 +947,7 @@ def test_me_profile_lookup_failure_is_generic_503(env: Env, monkeypatch: pytest.
 
 def test_profile_schema_declares_only_public_fields() -> None:
     assert set(UserProfileResponse.model_fields) == PROFILE_FIELDS
-    assert set(LoginRequest.model_fields) == {"email", "password"}
+    assert set(LoginRequest.model_fields) == {"email", "password", "selected_role"}
 
 
 # --------------------------------------------------------------------------- #
@@ -936,7 +962,7 @@ def test_openapi_documents_login_and_me() -> None:
     login = paths[LOGIN_URL]["post"]
     me = paths[ME_URL]["get"]
     assert set(paths[LOGIN_URL]) == {"post"} and set(paths[ME_URL]) == {"get"}
-    assert {"200", "401", "422", "503"} <= set(login["responses"])
+    assert {"200", "401", "403", "422", "503"} <= set(login["responses"])
     assert {"200", "401", "503"} <= set(me["responses"])
     assert "security" not in login
     assert me["security"] == [{"HTTPBearer": []}]
@@ -947,7 +973,7 @@ def test_openapi_documents_login_and_me() -> None:
     }
 
     components = schema["components"]["schemas"]
-    assert set(components["LoginRequest"]["properties"]) == {"email", "password"}
+    assert set(components["LoginRequest"]["properties"]) == {"email", "password", "selected_role"}
     assert set(components["TokenResponse"]["properties"]) == {"access_token", "token_type", "expires_in"}
     assert set(components["UserProfileResponse"]["properties"]) == PROFILE_FIELDS
     for name in INTERNAL_FIELDS:

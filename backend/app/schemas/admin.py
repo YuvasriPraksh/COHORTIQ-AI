@@ -3,9 +3,10 @@
 Requests
     Unknown fields (and unknown query parameters) are rejected. There is no
     request field for a password hash, token version, lockout state or any
-    other internal authentication field, and the student-creation request has
-    no ``role`` field: the API can only create students, and a cohort is
-    required. Each request maps to exactly one repository operation in
+    other internal authentication field, and the account-creation requests
+    have no ``role`` field: students and staff are created through separate
+    role-fixed routes, and both require a cohort. Each request maps to exactly
+    one repository operation in
     :mod:`backend.app.auth.admin_repository`, so every change stays atomic.
 
 Responses
@@ -42,7 +43,8 @@ from backend.app.core.security import MAX_PASSWORD_LENGTH
 MAX_ID = 2**63 - 1
 """Largest SQLite integer; larger ids are rejected instead of overflowing."""
 
-Role = Literal["student", "administrator"]
+Role = Literal["student", "staff", "administrator"]
+RoleChange = Literal["student", "administrator"]
 
 
 # --------------------------------------------------------------------------- #
@@ -132,6 +134,10 @@ class StudentCreateRequest(BaseModel):
         return self
 
 
+class StaffCreateRequest(StudentCreateRequest):
+    """Create a staff account through administrator-only provisioning."""
+
+
 class UserProfileUpdateRequest(BaseModel):
     """Change an account's full name and/or cohort. Omitted fields are unchanged.
 
@@ -176,7 +182,7 @@ class RoleChangeRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    role: Role  # a Literal accepts only these exact strings
+    role: RoleChange  # a Literal accepts only these exact strings
 
 
 class PasswordResetRequest(BaseModel):
@@ -300,6 +306,8 @@ AUDIT_DETAIL_RESPONSE_KEYS = frozenset(
         "reason",
         "method",
         "path",
+        "route",
+        "answer_status",
     }
 )
 """Audit detail keys returned by the API."""

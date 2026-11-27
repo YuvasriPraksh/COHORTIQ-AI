@@ -6,9 +6,10 @@ atomic repository operation in :mod:`backend.app.auth.admin_repository`, which
 re-checks the acting administrator inside its transaction and writes the audit
 event in that same transaction.
 
-Policy, enforced by the repository and only translated to HTTP here:
+Policy, enforced by the repository and API and only translated to HTTP here:
 
-- Only students can be created; there is no role field on creation.
+- Students and staff can be created through administrator-only routes; the
+  role is fixed by the route, not supplied by the request.
 - The administrator role can never be granted. A promotion request reaches the
   repository, which refuses it and records the refusal (HTTP 403).
 - Administrators cannot change their own role or active status, and cannot
@@ -28,22 +29,32 @@ from typing import Annotated, Any, Callable, NoReturn, Optional, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Path as PathParam, Query, Response, status
 
-from backend.app.api.deps import FORBIDDEN_DETAIL, AuthenticatedUser, get_auth_db_path, require_administrator
+from backend.app.api.deps import (
+    FORBIDDEN_DETAIL,
+    AuthenticatedUser,
+    get_auth_db_path,
+    get_auth_settings,
+    require_administrator,
+)
 from backend.app.api.permissions import ADMINISTRATOR_ONLY_RESPONSES
 from backend.app.audit.repository import AuditEventError
 from backend.app.auth import admin_repository
+from backend.app.auth.email_domains import email_matches_role_domain
 from backend.app.auth.admin_repository import (
     AdminActionRefusedError,
     ConcurrentModificationError,
     UserNotFoundError,
 )
+from backend.app.auth.models import ROLE_STAFF, ROLE_STUDENT
 from backend.app.auth.repository import DuplicateEmailError, UserRecord, WeakPasswordError, get_user_by_id
+from backend.app.core.config import Settings
 from backend.app.schemas.admin import (
     MAX_ID,
     AdminUserListResponse,
     AdminUserResponse,
     PasswordResetRequest,
     RoleChangeRequest,
+    StaffCreateRequest,
     StudentCreateRequest,
     UserListQuery,
     UserProfileUpdateRequest,
@@ -168,14 +179,48 @@ def create_student_account(
     request: StudentCreateRequest,
     administrator: Administrator,
     db_path: DbPath,
+    settings: Settings = Depends(get_auth_settings),
 ) -> AdminUserResponse:
     """Create a student with a cohort and an administrator-set initial password.
 
     Administrators can only be created with the command-line bootstrap script.
     """
+    if not email_matches_role_domain(request.email, ROLE_STUDENT, settings):
+        raise _validation_error(f"Use a student email ending in @{settings.student_email_domain}.", "email")
     record = _run(
         "create",
         lambda: admin_repository.create_student(
+            administrator,
+            email=request.email,
+            password=request.password,
+            admission_batch=request.admission_batch,
+            programme=request.programme,
+            full_name=request.full_name,
+            db_path=db_path,
+        ),
+    )
+    return _respond(record)
+
+
+@router.post(
+    "/staff",
+    response_model=AdminUserResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Provision a staff account",
+    responses={409: {"description": DUPLICATE_EMAIL_DETAIL}},
+)
+def create_staff_account(
+    request: StaffCreateRequest,
+    administrator: Administrator,
+    db_path: DbPath,
+    settings: Settings = Depends(get_auth_settings),
+) -> AdminUserResponse:
+    """Provision staff accounts with the institution's staff email domain."""
+    if not email_matches_role_domain(request.email, ROLE_STAFF, settings):
+        raise _validation_error(f"Use a staff email ending in @{settings.staff_email_domain}.", "email")
+    record = _run(
+        "create_staff",
+        lambda: admin_repository.create_staff(
             administrator,
             email=request.email,
             password=request.password,

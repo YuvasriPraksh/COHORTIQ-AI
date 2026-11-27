@@ -1,0 +1,50 @@
+{
+  "name": "cohortiq-routing-v1",
+  "description": "Labelled routing questions for the adaptive router, on the two approved regulations in the project database ('SMVEC' 2023 for batches 2024-2025 'B-tech - CSE'; 'regulation 2' 2024 for batches 2022-2023 'b tech aids'). Labels follow the route definitions, not the router's output: general = answered by the cohort's regulations (even if retrieval ranks poorly); clause_lookup = cites a clause that exists for that cohort; low_evidence = about regulations but not answered by the cohort's approved regulations (including no applicable regulation and non-existent clauses); out_of_scope = not about academic regulations; clarify = cohort missing. Cases marked calibration were scored while choosing the threshold and vocabulary, so they are not held out.",
+  "cases": [
+    {"id": "general-attendance", "question": "What is the minimum attendance needed to write the end semester examination?", "admission_batch": "2024", "programme": "B-tech - CSE", "expected_route": "general", "calibration": true},
+    {"id": "general-passing-theory-miss", "question": "What marks are required to pass a theory course?", "admission_batch": "2023", "programme": "b tech aids", "expected_route": "general", "calibration": true, "note": "Genuine retrieval miss in the retrieval report: answered on page 19, which BM25 ranks outside the top 5. The route is still general; routing cannot fix ranking."},
+    {"id": "general-distinction", "question": "What are the conditions for First Class with Distinction?", "admission_batch": "2022", "programme": "b tech aids", "expected_route": "general", "calibration": true},
+    {"id": "general-grades", "question": "What letter grade and grade points are given for 80 to 89 marks?", "admission_batch": "2025", "programme": "B-tech - CSE", "expected_route": "general", "calibration": true},
+    {"id": "general-honours", "question": "What CGPA is required for a B.Tech degree with Honours?", "admission_batch": "2024", "programme": "B-tech - CSE", "expected_route": "general", "calibration": true},
+    {"id": "general-attendance-scenario", "question": "Can I write the exam if I have 70% attendance?", "admission_batch": "2024", "programme": "B-tech - CSE", "expected_route": "general", "calibration": true},
+    {"id": "general-fail-course", "question": "What happens if I fail a course?", "admission_batch": "2024", "programme": "B-tech - CSE", "expected_route": "general", "calibration": true, "note": "Lowest best score among answerable labelled questions (3.75)."},
+    {"id": "general-revaluation-short", "question": "revaluation rules", "admission_batch": "2022", "programme": "b tech aids", "expected_route": "general", "calibration": true},
+    {"id": "general-practical-pass", "question": "What is the passing minimum for a practical course?", "admission_batch": "2025", "programme": "B-tech - CSE", "expected_route": "general", "calibration": false},
+    {"id": "general-lateral-distinction", "question": "Can a lateral entry student get First Class with Distinction?", "admission_batch": "2023", "programme": "b tech aids", "expected_route": "general", "calibration": false},
+    {"id": "general-sgpa", "question": "How is the SGPA calculated?", "admission_batch": "2022", "programme": "b tech aids", "expected_route": "general", "calibration": false},
+    {"id": "general-ragging", "question": "Will a student be terminated for ragging?", "admission_batch": "2024", "programme": "B-tech - CSE", "expected_route": "general", "calibration": false},
+    {"id": "general-absent-grade", "question": "What grade is given to a student who is absent from the examination?", "admission_batch": "2023", "programme": "b tech aids", "expected_route": "general", "calibration": false},
+    {"id": "general-revaluation-arrears", "question": "How many arrears can I have and still apply for revaluation?", "admission_batch": "2025", "programme": "B-tech - CSE", "expected_route": "general", "calibration": false},
+
+    {"id": "clause-10-1", "question": "What does clause 10.1 say?", "admission_batch": "2024", "programme": "B-tech - CSE", "expected_route": "clause_lookup", "calibration": true},
+    {"id": "clause-14-3", "question": "Explain clause 14.3", "admission_batch": "2024", "programme": "B-tech - CSE", "expected_route": "clause_lookup", "calibration": true},
+    {"id": "clause-12-2-2", "question": "What is in clause 12.2.2?", "admission_batch": "2025", "programme": "B-tech - CSE", "expected_route": "clause_lookup", "calibration": true},
+    {"id": "clause-11-2", "question": "What does clause 11.2 say?", "admission_batch": "2024", "programme": "B-tech - CSE", "expected_route": "clause_lookup", "calibration": false},
+    {"id": "clause-section-12-1", "question": "Summarise section 12.1", "admission_batch": "2022", "programme": "b tech aids", "expected_route": "clause_lookup", "calibration": false},
+    {"id": "clause-8-2", "question": "What does clause 8.2 say?", "admission_batch": "2023", "programme": "b tech aids", "expected_route": "clause_lookup", "calibration": false},
+
+    {"id": "low-clause-99-4", "question": "What does clause 99.4 say?", "admission_batch": "2024", "programme": "B-tech - CSE", "expected_route": "low_evidence", "expected_reason": "clause_not_found", "calibration": true},
+    {"id": "low-clause-42-7", "question": "What does clause 42.7 say?", "admission_batch": "2022", "programme": "b tech aids", "expected_route": "low_evidence", "expected_reason": "clause_not_found", "calibration": false},
+    {"id": "low-no-regulation-batch", "question": "What is the minimum attendance needed?", "admission_batch": "2019", "programme": "B-tech - CSE", "expected_route": "low_evidence", "expected_reason": "no_applicable_regulations", "calibration": false},
+    {"id": "low-programme-mismatch", "question": "What marks are required to pass a theory course?", "admission_batch": "2024", "programme": "b tech aids", "expected_route": "low_evidence", "expected_reason": "no_applicable_regulations", "calibration": false},
+    {"id": "low-exam-timetable", "question": "What is the exam timetable for next week?", "admission_batch": "2024", "programme": "B-tech - CSE", "expected_route": "low_evidence", "calibration": false, "note": "About examinations, but the regulations contain no timetable."},
+    {"id": "low-tuition-fee", "question": "How much is the semester tuition fee?", "admission_batch": "2022", "programme": "b tech aids", "expected_route": "low_evidence", "calibration": false, "note": "The regulations mention fees but state no tuition amount."},
+    {"id": "low-honours-not-in-r2", "question": "What CGPA is required for an honours degree?", "admission_batch": "2023", "programme": "b tech aids", "expected_route": "low_evidence", "calibration": false, "note": "'regulation 2' has no honours degree rule."},
+
+    {"id": "oos-cricket", "question": "Who won the cricket world cup in 2011?", "admission_batch": "2024", "programme": "B-tech - CSE", "expected_route": "out_of_scope", "calibration": true},
+    {"id": "oos-weather", "question": "What is the weather in Chennai today?", "admission_batch": "2024", "programme": "B-tech - CSE", "expected_route": "out_of_scope", "calibration": true},
+    {"id": "oos-capital", "question": "What is the capital of France?", "admission_batch": "2022", "programme": "b tech aids", "expected_route": "out_of_scope", "calibration": true},
+    {"id": "oos-joke", "question": "Tell me a joke", "admission_batch": "2024", "programme": "B-tech - CSE", "expected_route": "out_of_scope", "calibration": true},
+    {"id": "oos-poem", "question": "Write me a poem about the sea", "admission_batch": "2022", "programme": "b tech aids", "expected_route": "out_of_scope", "calibration": false},
+    {"id": "oos-smartphone", "question": "What's the best smartphone under 20000 rupees?", "admission_batch": "2024", "programme": "B-tech - CSE", "expected_route": "out_of_scope", "calibration": false},
+    {"id": "oos-prime-minister", "question": "Who is the prime minister of India?", "admission_batch": "2023", "programme": "b tech aids", "expected_route": "out_of_scope", "calibration": false},
+    {"id": "oos-translate", "question": "Translate good morning into French", "admission_batch": "2025", "programme": "B-tech - CSE", "expected_route": "out_of_scope", "calibration": false},
+    {"id": "oos-cricket-result", "question": "What was the result of the cricket match?", "admission_batch": "2024", "programme": "B-tech - CSE", "expected_route": "out_of_scope", "calibration": false, "note": "Contains 'result', which is also a regulation term."},
+    {"id": "oos-cricket-no-cohort", "question": "Who won the cricket world cup in 2011?", "admission_batch": "", "programme": "", "expected_route": "out_of_scope", "calibration": false, "note": "Out-of-scope is checked before the cohort."},
+
+    {"id": "clarify-no-batch", "question": "What is the minimum attendance needed?", "admission_batch": "", "programme": "B-tech - CSE", "expected_route": "clarify", "calibration": false},
+    {"id": "clarify-no-programme", "question": "Explain clause 10.1", "admission_batch": "2024", "programme": "", "expected_route": "clarify", "calibration": false},
+    {"id": "clarify-no-cohort", "question": "What are the rules for revaluation?", "admission_batch": "  ", "programme": "", "expected_route": "clarify", "calibration": false}
+  ]
+}

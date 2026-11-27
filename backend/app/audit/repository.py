@@ -70,7 +70,7 @@ AUDIT_TABLE_SQL = """
         outcome TEXT NOT NULL CHECK (outcome IN ('success', 'failure', 'denied')),
         actor_type TEXT NOT NULL CHECK (actor_type IN ('user', 'anonymous', 'cli', 'system')),
         actor_user_id INTEGER CHECK (actor_user_id IS NULL OR actor_user_id > 0),
-        actor_role TEXT CHECK (actor_role IS NULL OR actor_role IN ('student', 'administrator')),
+        actor_role TEXT CHECK (actor_role IS NULL OR actor_role IN ('student', 'staff', 'administrator')),
         target_type TEXT CHECK (target_type IS NULL OR target_type IN ('user', 'regulation')),
         target_id INTEGER CHECK (target_id IS NULL OR target_id > 0),
         details TEXT NOT NULL DEFAULT '{}'
@@ -151,6 +151,10 @@ REASONS = (
 )
 
 HTTP_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
+
+# query.answered: how a question was handled. The question itself is never stored.
+QUESTION_ROUTES = ("out_of_scope", "clarify", "clause_lookup", "low_evidence", "general")
+ANSWER_STATUSES = ("answered", "insufficient_evidence", "conflicting_evidence")
 
 _ROUTE_TEMPLATE = re.compile(r"^/[A-Za-z0-9_./{}-]{0,199}$")
 _STATUS_VALUE = re.compile(r"^[A-Za-z_ -]{1,32}$")
@@ -256,6 +260,8 @@ _DETAIL_VALIDATORS: Mapping[str, Callable[[str, Any], Any]] = MappingProxyType(
         "reason": _choice(REASONS),
         "method": _choice(HTTP_METHODS),
         "path": _route_template,
+        "route": _choice(QUESTION_ROUTES),
+        "answer_status": _choice(ANSWER_STATUSES),
     }
 )
 
@@ -293,6 +299,9 @@ ACTIONS: Mapping[str, ActionSpec] = MappingProxyType(
         # Regulations
         "regulation.ingested": _spec(("success", "failure"), "regulation", "reason", target_required=False),
         "regulation.verification_changed": _spec(("success",), "regulation", "old_status", "new_status"),
+        "regulation.change_reviewed": _spec(("success",), "regulation", "old_status", "new_status"),
+        # Student and administrator questions: outcome of the request only, never its text
+        "query.answered": _spec(("success",), None, "route", "answer_status", "admission_batch", "programme"),
         # Authorization refusals (403); anonymous 401s are never audited
         "authorization.denied": _spec(("denied",), None, "method", "path", "reason"),
     }
@@ -344,10 +353,33 @@ def _row_to_event(row: sqlite3.Row) -> AuditEvent:
 def init_audit_tables(db_path: str | Path | None = None) -> None:
     """Create the ``audit_events`` table, its indexes and append-only triggers.
 
-    Idempotent and additive: every statement is ``IF NOT EXISTS``, existing
-    events are kept, and no other table is touched.
+    Existing events are preserved when the role constraint is expanded to
+    include staff. The migration is atomic and keeps the append-only triggers.
     """
     with closing(get_connection(db_path)) as connection:
+        existing = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'audit_events';"
+        ).fetchone()
+        if existing and "'staff'" not in (existing["sql"] or ""):
+            connection.isolation_level = None
+            connection.execute("BEGIN IMMEDIATE;")
+            try:
+                connection.execute("ALTER TABLE audit_events RENAME TO audit_events_before_staff;")
+                connection.execute(AUDIT_TABLE_SQL)
+                columns = (
+                    "id, occurred_at, action, outcome, actor_type, actor_user_id, actor_role, "
+                    "target_type, target_id, details"
+                )
+                connection.execute(
+                    f"INSERT INTO audit_events ({columns}) "
+                    f"SELECT {columns} FROM audit_events_before_staff;"
+                )
+                connection.execute("DROP TABLE audit_events_before_staff;")
+                connection.execute("COMMIT;")
+            except BaseException:
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK;")
+                raise
         connection.execute(AUDIT_TABLE_SQL)
         for statement in (*AUDIT_INDEX_SQL, *AUDIT_TRIGGER_SQL):
             connection.execute(statement)

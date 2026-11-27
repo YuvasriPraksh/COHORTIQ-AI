@@ -326,7 +326,8 @@ def test_default_user_store_is_the_users_database(tmp_path: Path) -> None:
 def test_missing_signing_secret_fails_closed_with_503(env: Env, caplog: pytest.LogCaptureFixture) -> None:
     token = env.token_for("2")
     app = _build_app()
-    app.dependency_overrides[get_auth_settings] = lambda: Settings(app_env="development")
+    # jwt_secret_key=None: a developer's .env must not supply a secret to this test.
+    app.dependency_overrides[get_auth_settings] = lambda: Settings(app_env="development", jwt_secret_key=None)
     app.dependency_overrides[get_user_store] = lambda: env.store
     client = TestClient(app)
 

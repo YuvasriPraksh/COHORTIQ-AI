@@ -353,3 +353,34 @@ def test_gemini_temporary_service_error_handling() -> None:
     assert result.citations == []
     assert "cannot provide a grounded answer" in result.answer.lower()
     assert result.limitations
+
+
+def test_whitespace_differences_keep_the_models_quote_and_pass_citation_validation() -> None:
+    """Regression: PDF text keeps line breaks; a correct quote must not be replaced or rejected."""
+    from app.citation_validator import validate_grounded_answer
+    from app.gemini_service import _supporting_text_from_evidence
+    from app.models import GroundedAnswer, GroundedCitation
+
+    chunk = {
+        "chunk_id": "1-p21-c61",
+        "document_name": "SMVEC",
+        "regulation_version": "2023",
+        "page_number": 21,
+        "chunk_text": "10.1.1. The student is permitted to appear for End Semester Examinations, only if he/she \n"
+        "maintains minimum 75% of attendance.   " + "Other text. " * 40,
+    }
+    quote = "The student is permitted to appear for End Semester Examinations, only if he/she maintains minimum 75% of attendance."
+
+    assert _supporting_text_from_evidence(chunk, quote) == quote
+    fallback = _supporting_text_from_evidence(chunk, "A paraphrase that is not in the text.")
+    assert not fallback.endswith("...") and fallback in chunk["chunk_text"]
+
+    for text in (quote, fallback):
+        answer = GroundedAnswer(
+            answer="At least 75% attendance.",
+            status="answered",
+            citations=[GroundedCitation(chunk_id="1-p21-c61", document_name="SMVEC", regulation_version="2023",
+                                        page_number=21, relevant_supporting_text=text)],
+        )
+        validated, issues = validate_grounded_answer(answer, [chunk])
+        assert validated.status == "answered" and len(validated.citations) == 1 and issues == []

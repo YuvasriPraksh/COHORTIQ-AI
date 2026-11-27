@@ -27,7 +27,7 @@ from backend.app.api.v1 import admin_users as admin_routes
 from backend.app.audit.repository import AuditEventError, init_audit_tables
 from backend.app.auth import admin_repository
 from backend.app.auth.admin_repository import AdminActionRefusedError, ConcurrentModificationError
-from backend.app.auth.models import ROLE_ADMINISTRATOR, ROLE_STUDENT
+from backend.app.auth.models import ROLE_ADMINISTRATOR, ROLE_STAFF, ROLE_STUDENT
 from backend.app.auth.repository import get_user_by_id, init_auth_tables, to_authenticated_user, update_user
 from backend.app.core.security import verify_password
 from backend.app.main import app, initialize_storage
@@ -122,7 +122,7 @@ def _assert_user_body(response: Any, status_code: int = 200) -> dict[str, Any]:
 
 
 def _new_student(**overrides: Any) -> dict[str, Any]:
-    body = {"email": f"new-{secrets.token_hex(4)}@uni.edu", "password": strong_password(),
+    body = {"email": f"new-{secrets.token_hex(4)}@student.smvec.ac.in", "password": strong_password(),
             "admission_batch": "2024", "programme": "BSc CS"}
     body.update(overrides)
     return body
@@ -176,17 +176,57 @@ def test_get_user(env: Env) -> None:
 
 
 def test_create_student_and_sign_in(env: Env) -> None:
-    body = _new_student(email="Fresh.Student@Uni.EDU", full_name="Fresh Student")
+    body = _new_student(email="Fresh.Student@Student.SMVEC.ac.in", full_name="Fresh Student")
 
     response = env.request("POST", "", json=body)
 
     created = _assert_user_body(response, 201)
-    assert (created["email"], created["role"], created["admission_batch"]) == ("fresh.student@uni.edu", "student", "2024")
+    assert (created["email"], created["role"], created["admission_batch"]) == (
+        "fresh.student@student.smvec.ac.in", "student", "2024")
     _assert_safe(response, body["password"])
-    assert env.login("fresh.student@uni.edu", body["password"]).status_code == 200
+    assert env.login("fresh.student@student.smvec.ac.in", body["password"]).status_code == 200
     [event] = env.events()
     assert (event["action"], event["outcome"], event["actor_user_id"], event["target_id"]) == (
         "user.created", "success", env.admin.user.id, created["id"])
+
+
+def test_admin_provisions_staff_only_at_the_staff_domain(env: Env) -> None:
+    payload = _new_student(email="teacher@staff.smvec.ac.in", full_name="Taylor Teacher")
+
+    created = _assert_user_body(env.request("POST", "/staff", json=payload), 201)
+
+    assert (created["email"], created["role"], created["admission_batch"], created["programme"]) == (
+        "teacher@staff.smvec.ac.in", ROLE_STAFF, "2024", "BSc CS"
+    )
+    [event] = env.events("user.created")
+    assert event["target_id"] == created["id"]
+    assert event["details"]["role"] == ROLE_STAFF
+    assert env.login(created["email"], payload["password"]).status_code == 200
+
+    wrong_domain = env.request("POST", "/staff", json={**payload, "email": "teacher@student.smvec.ac.in"})
+    assert wrong_domain.status_code == 422
+    assert "ending in @staff.smvec.ac.in" in wrong_domain.text
+    assert env.events("user.created") == [event]
+
+
+def test_admin_can_reset_a_staff_password(env: Env) -> None:
+    staff = env.account(
+        ROLE_STAFF,
+        email="teacher@staff.smvec.ac.in",
+        admission_batch="2024",
+        programme="BSc CS",
+    )
+    new_password = strong_password()
+
+    response = env.request(
+        "POST",
+        f"/{staff.user.id}/password",
+        json={"new_password": new_password},
+    )
+
+    assert response.status_code == 200
+    assert env.me(staff) == 401
+    assert env.login(staff.user.email, new_password).status_code == 200
 
 
 @pytest.mark.parametrize(
@@ -214,7 +254,7 @@ def test_create_rejects_invalid_or_privileged_requests(env: Env, overrides: dict
 
 
 def test_create_refuses_a_password_containing_the_email_name(env: Env) -> None:
-    body = _new_student(email="jordan.smith@uni.edu", password="Jordan.Smith#2024")
+    body = _new_student(email="jordan.smith@student.smvec.ac.in", password="Jordan.Smith#2024")
 
     response = env.request("POST", "", json=body)
 
@@ -224,7 +264,7 @@ def test_create_refuses_a_password_containing_the_email_name(env: Env) -> None:
 
 
 def test_create_rejects_duplicate_email(env: Env) -> None:
-    existing = env.account()
+    existing = env.account(email="existing@student.smvec.ac.in")
 
     response = env.request("POST", "", json=_new_student(email=existing.user.email.upper()))
 

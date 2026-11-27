@@ -8,11 +8,13 @@ export interface TokenResponse {
   expires_in: number;
 }
 
+export type AccountRole = "student" | "staff" | "administrator";
+
 /** GET /api/v1/auth/me response (UserProfileResponse). */
 export interface UserProfile {
   id: number;
   email: string;
-  role: "student" | "administrator";
+  role: AccountRole;
   full_name: string | null;
   admission_batch: string | null;
   programme: string | null;
@@ -20,11 +22,39 @@ export interface UserProfile {
   created_at: string;
 }
 
+/** POST /api/v1/auth/register request body (RegisterRequest). Students only; no role field. */
+export interface RegisterRequest {
+  email: string;
+  password: string;
+  admission_batch: string;
+  programme: string;
+  full_name?: string;
+}
+
+/** Domains are enforced by the backend; these values only explain the entry forms. */
+export const STUDENT_EMAIL_DOMAIN: string = (import.meta.env.VITE_STUDENT_EMAIL_DOMAIN ?? "student.smvec.ac.in")
+  .trim()
+  .toLowerCase()
+  .replace(/^@/, "");
+export const STAFF_EMAIL_DOMAIN: string = (import.meta.env.VITE_STAFF_EMAIL_DOMAIN ?? "staff.smvec.ac.in")
+  .trim()
+  .toLowerCase()
+  .replace(/^@/, "");
+export const ADMINISTRATOR_EMAIL_DOMAIN: string = (
+  import.meta.env.VITE_ADMINISTRATOR_EMAIL_DOMAIN ?? "admin.smvec.ac.in"
+)
+  .trim()
+  .toLowerCase()
+  .replace(/^@/, "");
+
+export type ChunkingStrategy = "fixed_size" | "recursive" | "semantic";
+
 /** POST /api/v1/query/ask request body (StudentQuestionRequest; other fields use server defaults). */
 export interface AskRequest {
   question: string;
   admission_batch: string;
   programme: string;
+  chunking_strategy?: ChunkingStrategy;
 }
 
 export type AnswerStatus = "answered" | "insufficient_evidence" | "conflicting_evidence";
@@ -89,3 +119,120 @@ export interface AskResponse {
 
 /** Maximum question length accepted by the API (MAX_QUESTION_LENGTH default). */
 export const MAX_QUESTION_LENGTH = 2000;
+
+/** GET /api/v1/cohorts (CohortListResponse): cohorts covered by approved regulations. */
+export interface Cohort {
+  admission_batch: string;
+  programme: string;
+}
+
+export type VerificationStatus = "approved" | "pending" | "rejected";
+
+/** RegulationRecord (backend/app/schemas/regulations.py). */
+export interface Regulation {
+  id: number;
+  document_name: string;
+  regulation_version: string;
+  effective_date: string | null;
+  applicable_batches: string[];
+  applicable_programmes: string[];
+  upload_date: string | null;
+  total_pages: number | null;
+  processing_status: string | null;
+  verification_status: string | null;
+}
+
+export interface DocumentPage {
+  page_number: number;
+  extracted_text: string | null;
+  extraction_status: string | null;
+}
+
+export interface IngestionResult {
+  status: string;
+  regulation_id: number | null;
+  verification_status: string | null;
+  extraction_summary: {
+    filename: string | null;
+    total_pages: number | null;
+    successful_pages: number | null;
+    pages_needing_attention: number | null;
+  } | null;
+  message: string;
+}
+
+/** AdminUserResponse (backend/app/schemas/admin.py). */
+export interface AdminUser {
+  id: number;
+  email: string;
+  role: AccountRole;
+  full_name: string | null;
+  admission_batch: string | null;
+  programme: string | null;
+  is_active: boolean;
+  is_locked: boolean;
+  last_login_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AdminUserList {
+  users: AdminUser[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface AuditEvent {
+  id: number;
+  occurred_at: string;
+  action: string;
+  outcome: "success" | "failure" | "denied";
+  actor_type: "user" | "anonymous" | "cli" | "system";
+  actor_user_id: number | null;
+  actor_role: AccountRole | null;
+  target_type: "user" | "regulation" | null;
+  target_id: number | null;
+  details: Record<string, unknown>;
+}
+
+export interface AuditEventList {
+  events: AuditEvent[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface PotentialChange {
+  id: number;
+  change_type: "addition" | "removal" | "modification";
+  clause: string;
+  previous_page: number | null;
+  new_page: number | null;
+  previous_text: string | null;
+  new_text: string | null;
+  previous_text_truncated: boolean;
+  new_text_truncated: boolean;
+}
+
+export interface ChangeReview {
+  id: number;
+  previous_regulation_id: number;
+  previous_document_name: string;
+  previous_version: string;
+  new_regulation_id: number;
+  new_document_name: string;
+  new_version: string;
+  status: "needs_review" | "approved";
+  applicable_batches: string[];
+  applicable_programmes: string[];
+  changes: PotentialChange[];
+  created_by: number;
+  created_at: string;
+  reviewed_by: number | null;
+  reviewed_at: string | null;
+  warning: string;
+}
+
+/** Upload limit enforced by the API (MAX_UPLOAD_BYTES default). */
+export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;

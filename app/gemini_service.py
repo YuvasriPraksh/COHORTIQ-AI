@@ -210,13 +210,19 @@ def _supporting_text_from_evidence(
     chunk_text = str(evidence_chunk.get("chunk_text", ""))
     if isinstance(provided_text, str) and provided_text.strip():
         excerpt = provided_text.strip()
-        if excerpt in chunk_text:
+        # Compare ignoring whitespace and case, exactly as citation validation does:
+        # extracted PDF text keeps line breaks and double spaces that a model's
+        # verbatim quote normally collapses.
+        if excerpt in chunk_text or _collapse_whitespace(excerpt) in _collapse_whitespace(chunk_text):
             return excerpt
-    # Fallback to a concise excerpt from the actual evidence chunk.
-    excerpt = chunk_text.strip()
-    if len(excerpt) > 300:
-        excerpt = excerpt[:297].rstrip() + "..."
-    return excerpt
+    # Fallback to a concise excerpt from the actual evidence chunk. It must stay a
+    # verbatim substring (no added ellipsis) so citation validation can match it.
+    return chunk_text.strip()[:300].rstrip()
+
+
+def _collapse_whitespace(text: str) -> str:
+    """Lower-case and collapse all whitespace runs (same rule as citation validation)."""
+    return re.sub(r"\s+", " ", text).strip().lower()
 
 
 def _validate_and_normalize_citations(

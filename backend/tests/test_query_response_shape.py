@@ -44,7 +44,7 @@ BATCH = "2024"
 PROGRAMME = "BSc CS"
 QUESTION = "What is the minimum attendance requirement?"
 
-PUBLIC_KEYS = {"status", "answer", "citations", "validation_issues", "retrieval"}
+PUBLIC_KEYS = {"status", "answer", "citations", "validation_issues", "retrieval", "route"}
 PUBLIC_RETRIEVAL_KEYS = {"status", "message", "results"}
 PUBLIC_RESULT_KEYS = {
     "chunk_id",
@@ -386,7 +386,8 @@ def test_internal_workflow_result_still_contains_the_full_corpus(env: Env) -> No
     assert len(corpus["chunks"]) == 3
     assert any("UNCITED-MARKER-7c2e" in chunk["chunk_text"] for chunk in corpus["chunks"])
     assert all("chunk_text" in item for item in internal["retrieval"]["results"])
-    assert set(internal) == PUBLIC_KEYS | {"corpus"}
+    # The workflow itself is unchanged; ``route`` is added by the backend router.
+    assert set(internal) == (PUBLIC_KEYS - {"route"}) | {"corpus"}
 
 
 # --------------------------------------------------------------------------- #

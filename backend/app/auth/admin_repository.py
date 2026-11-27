@@ -39,7 +39,7 @@ from typing import Any, Iterator, Mapping, Optional
 
 from app.database import get_connection
 from backend.app.audit.repository import append_audit_event
-from backend.app.auth.models import ROLE_ADMINISTRATOR, ROLE_STUDENT, ROLES, AuthenticatedUser
+from backend.app.auth.models import ROLE_ADMINISTRATOR, ROLE_STAFF, ROLE_STUDENT, ROLES, AuthenticatedUser
 from backend.app.auth.repository import (
     _SELECT_COLUMNS,
     _UNSET,
@@ -140,7 +140,7 @@ def list_users(
     parameters: list[Any] = []
     if role is not None:
         if role not in ROLES:
-            raise ValueError("role filter must be 'student' or 'administrator'.")
+            raise ValueError("role filter must be 'student', 'staff' or 'administrator'.")
         clauses.append("role = ?")
         parameters.append(role)
     if is_active is not None:
@@ -302,12 +302,54 @@ def create_student(
     """
     for name, value in (("admission_batch", admission_batch), ("programme", programme)):
         if _optional_text(value, name, MAX_COHORT_VALUE_LENGTH) is None:
-            raise ValueError("Students must have an admission batch and programme.")
+            raise ValueError("Students and staff must have an admission batch and programme.")
     # Validated and hashed before taking the write lock (Argon2id is deliberately slow).
     values = _new_user_values(
         email,
         password,
         ROLE_STUDENT,
+        full_name=full_name,
+        admission_batch=admission_batch,
+        programme=programme,
+        is_active=True,
+    )
+    with _write_transaction(db_path) as connection:
+        administrator = _authorized_actor(connection, actor)
+        try:
+            user_id = _insert_user(connection, values)
+        except sqlite3.IntegrityError as error:
+            raise _integrity_error(error) from None
+        created = _fetch(connection, user_id)
+        assert created is not None
+        _audit(
+            connection,
+            "user.created",
+            "success",
+            administrator,
+            created,
+            {"role": created.role, "admission_batch": created.admission_batch, "programme": created.programme},
+        )
+    return created
+
+
+def create_staff(
+    actor: AuthenticatedUser,
+    *,
+    email: str,
+    password: str,
+    admission_batch: str,
+    programme: str,
+    full_name: Optional[str] = None,
+    db_path: str | Path | None = None,
+) -> UserRecord:
+    """Create an active staff account with a cohort and administrator-set password."""
+    for name, value in (("admission_batch", admission_batch), ("programme", programme)):
+        if _optional_text(value, name, MAX_COHORT_VALUE_LENGTH) is None:
+            raise ValueError("Staff must have an admission batch and programme.")
+    values = _new_user_values(
+        email,
+        password,
+        ROLE_STAFF,
         full_name=full_name,
         admission_batch=admission_batch,
         programme=programme,
@@ -361,7 +403,7 @@ def update_profile(
         changes = {name: value for name, value in requested.items() if getattr(target, name) != value}
         if not changes:
             return target
-        if target.role == ROLE_STUDENT and (
+        if target.role in (ROLE_STUDENT, ROLE_STAFF) and (
             changes.get("admission_batch", target.admission_batch) is None
             or changes.get("programme", target.programme) is None
         ):
@@ -383,7 +425,7 @@ def change_role(actor: AuthenticatedUser, user_id: Any, role: str, *, db_path: s
     administrator role, and demoting the last active administrator. A role
     change revokes the account's existing tokens.
     """
-    if role not in ROLES:
+    if role not in (ROLE_STUDENT, ROLE_ADMINISTRATOR):
         raise ValueError("Role must be 'student' or 'administrator'.")
     refusal: Optional[AdminActionRefusedError] = None
     with _write_transaction(db_path) as connection:
@@ -467,7 +509,7 @@ def revoke_sessions(actor: AuthenticatedUser, user_id: Any, *, db_path: str | Pa
 def reset_password(
     actor: AuthenticatedUser, user_id: Any, new_password: str, *, db_path: str | Path | None = None
 ) -> UserRecord:
-    """Set a student's password (existing policy, Argon2id) and revoke their tokens.
+    """Set a student or staff member's password (Argon2id) and revoke their tokens.
 
     Refused (and audited as denied): resetting one's own password (self-service
     password change is deferred) and resetting an administrator's password.
@@ -475,7 +517,7 @@ def reset_password(
     preview = get_user_by_id(user_id, db_path=db_path)
     statement: Optional[tuple[str, list[Any]]] = None
     actor_id = _parse_user_id(getattr(actor, "id", None))
-    if preview is not None and preview.role == ROLE_STUDENT and preview.id != actor_id:
+    if preview is not None and preview.role in (ROLE_STUDENT, ROLE_STAFF) and preview.id != actor_id:
         # Policy check and Argon2id hashing happen before taking the write lock.
         statement = _user_update_statement(preview, password=new_password)
 

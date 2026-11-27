@@ -177,7 +177,11 @@ def restore_verification_status(
 
 
 def list_regulations(
-    db_path: str | Path | None = None, *, approved_only: bool = False
+    db_path: str | Path | None = None,
+    *,
+    approved_only: bool = False,
+    admission_batch: str | None = None,
+    programme: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return stored regulations by delegating to the existing database layer.
 
@@ -186,8 +190,37 @@ def list_regulations(
     """
     regulations = database.get_all_regulations(db_path=db_path)
     if approved_only:
-        return [regulation for regulation in regulations if is_approved(regulation)]
+        regulations = [regulation for regulation in regulations if is_approved(regulation)]
+        if admission_batch is not None and programme is not None:
+            regulations = [
+                regulation
+                for regulation in regulations
+                if is_applicable_to_cohort(regulation, admission_batch, programme)
+            ]
     return regulations
+
+
+def is_applicable_to_cohort(regulation: Mapping[str, Any], admission_batch: str, programme: str) -> bool:
+    """Return whether a regulation applies to both exact cohort identifiers."""
+    return (
+        admission_batch in regulation.get("applicable_batches", [])
+        and programme in regulation.get("applicable_programmes", [])
+    )
+
+
+def list_approved_cohorts(db_path: str | Path | None = None) -> list[dict[str, str]]:
+    """Return every (admission batch, programme) pair covered by an approved regulation.
+
+    These are the exact strings retrieval matches against, so a student account
+    created with one of them has at least one applicable regulation.
+    """
+    pairs = {
+        (batch, programme)
+        for regulation in list_regulations(db_path=db_path, approved_only=True)
+        for batch in regulation["applicable_batches"]
+        for programme in regulation["applicable_programmes"]
+    }
+    return [{"admission_batch": batch, "programme": programme} for batch, programme in sorted(pairs)]
 
 
 def get_regulation_details(

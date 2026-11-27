@@ -6,7 +6,8 @@
 export const API_BASE_URL: string = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
 export const DEFAULT_TIMEOUT_MS = 15_000;
-export const ASK_TIMEOUT_MS = 35_000;
+export const ASK_TIMEOUT_MS = 60_000;
+export const UPLOAD_TIMEOUT_MS = 120_000;
 
 export type ApiErrorKind =
   | "network"
@@ -16,6 +17,8 @@ export type ApiErrorKind =
   | "invalid"
   | "too_large"
   | "unavailable"
+  | "not_found"
+  | "conflict"
   | "server";
 
 export class ApiError extends Error {
@@ -58,6 +61,12 @@ function errorFor(status: number, detail: string | null): ApiError {
   if (status === 400 || status === 422) {
     return new ApiError("invalid", detail ?? "Please check what you entered and try again.", status);
   }
+  if (status === 404) {
+    return new ApiError("not_found", detail ?? "That record could not be found.", status);
+  }
+  if (status === 409) {
+    return new ApiError("conflict", detail ?? "That change conflicts with the current record.", status);
+  }
   if (status === 413) {
     return new ApiError("too_large", detail ?? "That request is too large.", status);
   }
@@ -70,7 +79,7 @@ function errorFor(status: number, detail: string | null): ApiError {
 export async function apiRequest<T>(
   path: string,
   options: {
-    method?: "GET" | "POST";
+    method?: "GET" | "POST" | "PATCH";
     body?: unknown;
     token?: string | null;
     signal?: AbortSignal;
@@ -78,7 +87,9 @@ export async function apiRequest<T>(
   } = {},
 ): Promise<T> {
   const headers: Record<string, string> = { Accept: "application/json" };
-  if (options.body !== undefined) {
+  // FormData sets its own multipart Content-Type (with the boundary).
+  const isForm = typeof FormData !== "undefined" && options.body instanceof FormData;
+  if (options.body !== undefined && !isForm) {
     headers["Content-Type"] = "application/json";
   }
   if (options.token) {
@@ -108,7 +119,8 @@ export async function apiRequest<T>(
     response = await fetch(`${API_BASE_URL}${path}`, {
       method: options.method ?? "GET",
       headers,
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      body:
+        options.body === undefined ? undefined : isForm ? (options.body as FormData) : JSON.stringify(options.body),
       signal: controller.signal,
     });
   } catch (error) {

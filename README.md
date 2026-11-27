@@ -120,17 +120,17 @@ The FastAPI backend includes authentication and role-based access controls.
 - Student cohort access is checked against the cohort stored on the account.
 - Account and privilege changes can invalidate existing tokens.
 
-### 6. Regulation Version Comparison — Planned
+### 6. Regulation Change Radar
 
-A planned capability will compare regulation versions and identify changes in clauses, requirements, or academic rules.
+Administrators can compare two stored versions of the same regulation. The Change Radar aligns extracted passages, shows potential additions, removals and modifications with source-page references, and stores the result for later review. Machine-detected differences are always labelled **“Potential changes — review required.”** and are not academic conclusions.
 
-### 7. Cohort Impact Analysis — Planned
+The review status can be set to **Needs review** or **Approved**. Approval is audited and does not approve or publish the underlying PDF. Students and staff see an update only when the review is approved, the new regulation itself is approved, and its confirmed batch/programme applicability matches their authenticated account. These review records do not alter Q&A retrieval.
 
-A planned capability will help administrators identify which admission batches or programmes may be affected by a regulation change.
+Applicability is explicitly confirmed by an administrator against the new regulation's recorded applicability; automatic impact inference and structured clause management are not implemented.
 
 ### 8. Administrator User Management and Audit Logging
 
-Administrators can manage student accounts through the API: create students, update profiles and cohorts, reset student passwords, deactivate and reactivate accounts, unlock accounts and revoke sessions. Administrators themselves are created only with a command-line script.
+Administrators can manage student and staff accounts through the API: provision accounts, update profiles and cohorts, reset passwords, deactivate and reactivate accounts, unlock accounts and revoke sessions. Administrator accounts themselves are created only through the secured command-line bootstrap script.
 
 Security-relevant actions are recorded in an append-only audit log, which administrators can browse through a read-only endpoint. See [Administrator User Management](#administrator-user-management), [Audit Log](#audit-log) and [Administrator Account Recovery](#administrator-account-recovery).
 
@@ -338,9 +338,10 @@ The repository structure may evolve as additional backend capabilities and the p
 | Audit logging across application flows | Implemented (see [audit limitations](#consistency-and-limitations)) |
 | Administrator user-management APIs | Implemented |
 | Audit-event listing API | Implemented |
+| Regulation Change Radar comparison and review workflow | Implemented |
+| Cohort-filtered approved change updates | Implemented |
 | Administrator account recovery procedure | Planned |
-| Regulation version comparison | Planned |
-| Cohort impact analysis | Planned |
+| Automatic cohort impact inference | Planned |
 | Structured clause management | Planned |
 | Next.js frontend | Planned |
 | PostgreSQL and pgvector migration | Planned |
@@ -426,7 +427,7 @@ During development, interactive API documentation is available at:
 
 API documentation may be disabled or restricted in production.
 
-Starting the API creates any missing tables in the shared SQLite database (`DATABASE_PATH`, default `data/cohortiq.db`): the regulation tables, the backend-only `users` table and the append-only `audit_events` table. Existing data is never modified, and the Streamlit app does not use the backend-only tables.
+Starting the API creates any missing tables in the shared SQLite database (`DATABASE_PATH`, default `data/cohortiq.db`): the regulation tables, the backend-only `users` table, the append-only `audit_events` table, and Change Radar review records. Existing regulation data is preserved, and the Streamlit app does not use the backend-only tables.
 
 Run commands from the repository root so the relative `DATABASE_PATH` resolves correctly. From another directory, it points to a different, empty database file.
 
@@ -435,10 +436,11 @@ Run commands from the repository root so the relative `DATABASE_PATH` resolves c
 Administrators cannot be created through the API. Create the first one from an interactive terminal:
 
 ```powershell
-python -m backend.scripts.create_admin --email admin@university.edu --full-name "Registrar Office"
+python -m backend.scripts.create_admin --email admin@admin.smvec.ac.in --full-name "Registrar Office"
 ```
 
 - The password is entered twice at a hidden prompt. It cannot be passed as a command-line argument, and the command refuses to run when input is piped.
+- The address must use the configured `ADMINISTRATOR_EMAIL_DOMAIN` (default `admin.smvec.ac.in`).
 - The password must meet the password policy, and is stored only as an Argon2id hash.
 - If an account with the same email already exists (in any letter case or role), nothing is created or changed.
 - The script creates any missing tables, including `audit_events`. The account and a `user.created` audit event (actor type `cli`) are written in one transaction: if either cannot be stored, no account is created. The audit event contains no email address, name or password.
@@ -459,11 +461,18 @@ The backend currently exposes the following API operations.
 | `GET` | `/api/v1/cohorts/{admission_batch}/{programme}/regulations` | Retrieve regulations for a cohort | Signed in (students: own cohort) |
 | `POST` | `/api/v1/regulations/ingest` | Ingest a regulation | Administrator |
 | `PATCH` | `/api/v1/regulations/{regulation_id}/verification` | Update verification status | Administrator |
+| `GET` | `/api/v1/change-radar/reviews` | List saved comparisons | Administrator |
+| `POST` | `/api/v1/change-radar/reviews` | Compare stored versions and save a review | Administrator |
+| `GET` | `/api/v1/change-radar/reviews/{review_id}` | Retrieve a saved comparison | Administrator |
+| `PATCH` | `/api/v1/change-radar/reviews/{review_id}` | Set review to Needs review or Approved | Administrator |
+| `GET` | `/api/v1/updates` | List approved updates applicable to the authenticated cohort | Signed in (student/staff cohort only) |
 | `POST` | `/api/v1/query/ask` | Ask a regulation question | Signed in (students: own cohort) |
 | `POST` | `/api/v1/auth/login` | Authenticate | Public |
+| `POST` | `/api/v1/auth/register` | Register a student account with a college email | Public |
 | `GET` | `/api/v1/auth/me` | Retrieve the authenticated user's profile | Signed in |
 | `GET` | `/api/v1/admin/users` | List accounts | Administrator |
 | `POST` | `/api/v1/admin/users` | Create a student account | Administrator |
+| `POST` | `/api/v1/admin/users/staff` | Provision a staff account | Administrator |
 | `GET` | `/api/v1/admin/users/{user_id}` | Retrieve an account | Administrator |
 | `PATCH` | `/api/v1/admin/users/{user_id}` | Update an account's name or cohort | Administrator |
 | `PATCH` | `/api/v1/admin/users/{user_id}/role` | Demote an administrator to student | Administrator |
@@ -481,7 +490,10 @@ Consult the generated OpenAPI documentation for request and response schemas.
 - Every route is classified in `backend/app/api/permissions.py`. A test fails if a route is added without a classification, or with dependencies that do not match it.
 - Roles and cohorts are always read from the `users` table, never from the token or the request.
 - Missing, invalid, expired or revoked tokens and inactive accounts get `401`. Students calling an administrator route get `403`.
-- Students see approved regulations only. On the cohort route and `POST /api/v1/query/ask`, students may only use the admission batch and programme stored on their account (`403` otherwise). Administrators may use any cohort.
+- Students and staff see only approved regulations applicable to the admission batch and programme stored on their account, including when reading a regulation directly by ID. On the cohort route and `POST /api/v1/query/ask`, both may use only their stored cohort (`403` otherwise). Administrators may use any cohort.
+- `POST /api/v1/auth/register` lets students create their own account using `STUDENT_EMAIL_DOMAIN` (default `student.smvec.ac.in`). It applies the password policy, requires `admission_batch` and `programme`, always creates a **student** (there is no role field), returns `201` with the profile (no token; sign in afterwards) and `409` for an existing email. A `user.created` audit event (actor type `anonymous`) is written in the same transaction.
+- Staff accounts use `STAFF_EMAIL_DOMAIN` (default `staff.smvec.ac.in`) and can only be created by an authenticated administrator through `POST /api/v1/admin/users/staff`; they are assigned a cohort and never get public sign-up. Administrator accounts use `ADMINISTRATOR_EMAIL_DOMAIN` (default `admin.smvec.ac.in`) and can only be bootstrapped through the interactive CLI. The login API verifies the selected role and permitted email domain against the stored account.
+- **There is no email verification**, so an allowed domain alone does not prove that the person owns the address; configure institutional mailbox verification before production.
 - `POST /api/v1/auth/login` returns the same `401` for unknown emails, wrong passwords, inactive accounts and locked accounts. After `LOGIN_MAX_FAILED_ATTEMPTS` (default 5) consecutive failures, the account is locked for `LOGIN_LOCKOUT_MINUTES` (default 15). Sign-in returns `503` when `JWT_SECRET_KEY` is not set, or when its audit event cannot be written.
 
 ### Administrator User Management
@@ -496,13 +508,15 @@ All `/api/v1/admin/users` routes require an administrator, return `Cache-Control
   - The response contains `users`, `total`, `limit` and `offset`.
 - **Creating students:** the body takes `email`, `password`, `admission_batch`, `programme` and an optional `full_name`, and returns `201`.
   - There is no role field.
+  - The address must end in the configured student domain.
   - The password must meet the password policy.
   - A duplicate email gets `409`.
+- **Provisioning staff:** `POST /api/v1/admin/users/staff` accepts the same profile fields, requires the configured staff domain, and assigns the staff role server-side.
 - **Profile changes:** `PATCH /api/v1/admin/users/{user_id}` changes `full_name`, `admission_batch` and/or `programme`.
   - At least one field is required, and `null` clears a value.
-  - Students must keep a cohort.
+  - Students and staff must keep a cohort.
 - **Role changes:** `PATCH .../role` with `{"role": "student"}` demotes an administrator. Granting `administrator` is always refused (`403`); the API cannot create or promote administrators.
-- **Password reset:** `POST .../password` with `{"new_password": "..."}` sets a **student's** password. It is refused (`403`) for your own account and for any administrator account.
+- **Password reset:** `POST .../password` with `{"new_password": "..."}` sets a student's or staff member's password. It is refused (`403`) for your own account and for any administrator account.
 - **Self and last-administrator protection:** administrators cannot change their own role or active status (`403`). The last active administrator cannot be demoted or deactivated (`409`).
 - **Token revocation:** demotion, deactivation, password reset and `revoke-sessions` revoke the account's existing tokens. Reactivation does not restore them; the user must sign in again. `unlock` clears the failed sign-in counter and any temporary lock.
 - **Transactions:** each change runs in one transaction that re-checks the acting administrator and writes the audit event.

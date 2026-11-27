@@ -41,6 +41,7 @@ class IssuedToken:
 
     access_token: str = field(repr=False)
     expires_in: int
+    role: str
 
 
 def login(
@@ -81,4 +82,8 @@ def login(
         raise LoginFailedError()
 
     token = create_access_token(signed_in.id, signed_in.token_version, settings=settings, now=now)
-    return IssuedToken(access_token=token, expires_in=settings.access_token_expire_minutes * 60)
+    return IssuedToken(
+        access_token=token,
+        expires_in=settings.access_token_expire_minutes * 60,
+        role=signed_in.role,
+    )

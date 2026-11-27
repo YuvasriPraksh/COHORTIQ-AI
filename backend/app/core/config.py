@@ -160,6 +160,18 @@ class Settings:
     )
     jwt_issuer: str = field(default_factory=lambda: _env_str("JWT_ISSUER", DEFAULT_JWT_ISSUER))
     jwt_audience: str = field(default_factory=lambda: _env_str("JWT_AUDIENCE", DEFAULT_JWT_AUDIENCE))
+    student_email_domain: str = field(
+        default_factory=lambda: _env_str("STUDENT_EMAIL_DOMAIN", "student.smvec.ac.in").strip().lower().lstrip("@")
+    )
+    staff_email_domain: str = field(
+        default_factory=lambda: _env_str("STAFF_EMAIL_DOMAIN", "staff.smvec.ac.in").strip().lower().lstrip("@")
+    )
+    administrator_email_domain: str = field(
+        default_factory=lambda: _env_str("ADMINISTRATOR_EMAIL_DOMAIN", "admin.smvec.ac.in")
+        .strip()
+        .lower()
+        .lstrip("@")
+    )
     access_token_expire_minutes: int = _auth_int("ACCESS_TOKEN_EXPIRE_MINUTES", 30, 1, 1440)
     jwt_leeway_seconds: int = _auth_int("JWT_LEEWAY_SECONDS", 30, 0, 300)
     # Account lockout: this many consecutive failed sign-ins lock the account for

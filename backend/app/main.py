@@ -20,6 +20,7 @@ from app.database import init_database
 from backend.app.api.v1 import api_router
 from backend.app.audit.repository import init_audit_tables
 from backend.app.auth.repository import init_auth_tables
+from backend.app.services.change_radar import init_change_radar_tables
 from backend.app.core.config import format_byte_size, get_settings
 from backend.app.core.limits import BodyLimit, RequestSizeLimitMiddleware
 
@@ -41,6 +42,7 @@ def initialize_storage() -> Path:
     init_database(storage_settings.database_path)
     init_auth_tables(storage_settings.database_path)
     init_audit_tables(storage_settings.database_path)
+    init_change_radar_tables(storage_settings.database_path)
     return Path(storage_settings.database_path)
 
 

@@ -43,6 +43,11 @@ def _real_database_untouched() -> Iterator[None]:
     assert after == before, "The real project database was modified."
 
 
+@pytest.fixture(autouse=True)
+def _configured_administrator_domain(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ADMINISTRATOR_EMAIL_DOMAIN", "uni.edu")
+
+
 class Run:
     def __init__(self, code: int, out: str, err: str, prompts: list[str]) -> None:
         self.code, self.out, self.err, self.prompts = code, out, err, prompts
@@ -114,17 +119,17 @@ def test_creates_administrator_without_exposing_the_password(db_path: Path, capl
 
     with caplog.at_level(logging.DEBUG):
         run = run_script(
-            ["--email", "Registrar@University.EDU", "--full-name", "Registrar Office", "--db-path", str(db_path)],
+            ["--email", "Registrar@Uni.EDU", "--full-name", "Registrar Office", "--db-path", str(db_path)],
             passwords=[password, password],
         )
 
     assert run.code == 0, run.text
     assert run.prompts == ["Password: ", "Confirm password: "]
-    user = get_user_by_email("registrar@university.edu", db_path=db_path)
+    user = get_user_by_email("registrar@uni.edu", db_path=db_path)
     assert user is not None
     assert (user.role, user.is_active, user.full_name) == ("administrator", True, "Registrar Office")
     assert verify_password(password, user.password_hash)
-    assert "registrar@university.edu" in run.out and f"id={user.id}" in run.out
+    assert "registrar@uni.edu" in run.out and f"id={user.id}" in run.out
     for secret in (password, user.password_hash, "$argon2"):
         assert secret not in run.text
         assert secret not in caplog.text
@@ -218,6 +223,18 @@ def test_invalid_email_creates_nothing_and_touches_no_database(db_path: Path, em
     assert not db_path.exists()
 
 
+def test_wrong_administrator_domain_creates_nothing(db_path: Path) -> None:
+    run = run_script(
+        ["--email", "admin@other.edu", "--db-path", str(db_path)],
+        passwords=[strong_password(), strong_password()],
+    )
+
+    assert run.code == 1
+    assert "must end in @uni.edu" in run.err
+    assert run.prompts == []
+    assert not db_path.exists()
+
+
 def test_invalid_full_name_creates_nothing(db_path: Path) -> None:
     password = strong_password()
 
@@ -274,8 +291,8 @@ def test_parser_defines_no_password_option() -> None:
 def test_api_cannot_create_or_promote_administrators() -> None:
     """Administrators are created only by this script.
 
-    Since Stage 5 the API can create accounts, but only students: the single
-    account-creation operation takes a request schema without a role field.
+    The API can create students and administrator-provisioned staff, each via a
+    role-fixed route that accepts no role field.
     Promotion requests are refused by the repository (tested in
     test_admin_users_api.py). There is still no registration or sign-up route.
     """
@@ -296,13 +313,19 @@ def test_api_cannot_create_or_promote_administrators() -> None:
         "/api/v1/regulations",
         "/api/v1/regulations/{regulation_id}",
         "/api/v1/regulations/{regulation_id}/pages",
+        "/api/v1/cohorts",
         "/api/v1/cohorts/{admission_batch}/{programme}/regulations",
         "/api/v1/regulations/ingest",
         "/api/v1/regulations/{regulation_id}/verification",
+        "/api/v1/change-radar/reviews",
+        "/api/v1/change-radar/reviews/{review_id}",
+        "/api/v1/updates",
         "/api/v1/query/ask",
         "/api/v1/auth/login",
         "/api/v1/auth/me",
+        "/api/v1/auth/register",  # students only (no role field)
         "/api/v1/admin/users",
+        "/api/v1/admin/users/staff",
         "/api/v1/admin/users/{user_id}",
         "/api/v1/admin/users/{user_id}/role",
         "/api/v1/admin/users/{user_id}/password",
@@ -313,7 +336,12 @@ def test_api_cannot_create_or_promote_administrators() -> None:
         "/api/v1/admin/audit-events",  # read-only listing
     }
     assert {method for method in paths["/api/v1/admin/audit-events"]} == {"get"}
-    assert not any(word in path for path in paths for word in ("register", "signup", "promote"))
+    assert not any(word in path for path in paths for word in ("signup", "promote"))
+    # Self-registration exists but can only create students: its schema has no role field.
+    assert {method for method in paths["/api/v1/auth/register"]} == {"post"}
+    register_ref = paths["/api/v1/auth/register"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+    register_body = schema["components"]["schemas"][register_ref.rsplit("/", 1)[-1]]
+    assert "role" not in register_body["properties"] and register_body.get("additionalProperties") is False
     assert not any(
         path.startswith("/api/v1/admin/") and "admin/users" not in path and path != "/api/v1/admin/audit-events"
         for path in paths

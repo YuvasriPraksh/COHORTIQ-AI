@@ -47,6 +47,17 @@ class RegulationListResponse(BaseModel):
     regulations: List[RegulationRecord] = Field(default_factory=list)
 
 
+class CohortOption(BaseModel):
+    """An admission batch and programme covered by an approved regulation."""
+
+    admission_batch: str
+    programme: str
+
+
+class CohortListResponse(BaseModel):
+    cohorts: List[CohortOption] = Field(default_factory=list)
+
+
 class RegulationDetailResponse(BaseModel):
     """Response containing a single regulation record, if found."""
 

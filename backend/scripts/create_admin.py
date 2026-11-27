@@ -34,6 +34,8 @@ from app.config import ensure_app_directories, get_settings
 from app.database import init_database
 from backend.app.audit.repository import AuditEventError, init_audit_tables
 from backend.app.auth.password_policy import validate_password_strength
+from backend.app.auth.email_domains import email_matches_role_domain
+from backend.app.auth.models import ROLE_ADMINISTRATOR
 from backend.app.auth.repository import (
     DuplicateEmailError,
     WeakPasswordError,
@@ -42,6 +44,7 @@ from backend.app.auth.repository import (
     init_auth_tables,
     normalize_email,
 )
+from backend.app.core.config import get_settings as get_auth_settings
 
 MAX_PASSWORD_ATTEMPTS = 3
 
@@ -129,6 +132,13 @@ def main(
             email = normalize_email(raw_email)
         except ValueError:
             print("Error: the email address is not valid.", file=err)
+            return EXIT_FAILED
+        auth_settings = get_auth_settings()
+        if not email_matches_role_domain(email, ROLE_ADMINISTRATOR, auth_settings):
+            print(
+                f"Error: the administrator email must end in @{auth_settings.administrator_email_domain}.",
+                file=err,
+            )
             return EXIT_FAILED
 
         db_path = _initialize_database(args.db_path)

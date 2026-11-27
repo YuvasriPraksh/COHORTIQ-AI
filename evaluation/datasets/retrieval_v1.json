@@ -1,0 +1,227 @@
+{
+  "name": "cohortiq-retrieval-v1",
+  "description": "Retrieval evaluation set for the two approved regulations in the project database: 'SMVEC' version 2023 (admission batches 2024 and 2025, programme 'B-tech - CSE') and 'regulation 2' version 2024 (admission batches 2022 and 2023, programme 'b tech aids'). Most questions are asked once for each cohort, so the expected regulation differs only by cohort. Expected pages were judged by hand from the extracted page text: a page is relevant if it states the information needed to answer. Reference answers are paraphrased from those pages and are not scored in this version. Data note: the document stored as 'regulation 2' version 2024 is headed 'Academic Regulations 2020 (R-2020)' in its own text; cases use the stored metadata.",
+  "relevance_unit": "page",
+  "cases": [
+    {
+      "id": "attendance-smvec-2023",
+      "category": "attendance",
+      "question": "What is the minimum attendance needed to write the end semester examination?",
+      "admission_batch": "2024",
+      "programme": "B-tech - CSE",
+      "expected": {"document_name": "SMVEC", "regulation_version": "2023", "pages": [21, 22]},
+      "expect_abstain": false,
+      "reference_answer": "At least 75% attendance. A student with 60% to below 75% may be considered for medical reasons or approved sports, NCC or NSS participation, after paying the condonation fee with supporting documents.",
+      "source_note": "Clause 10.1"
+    },
+    {
+      "id": "attendance-reg2-2024",
+      "category": "attendance",
+      "question": "What is the minimum attendance needed to write the end semester examination?",
+      "admission_batch": "2022",
+      "programme": "b tech aids",
+      "expected": {"document_name": "regulation 2", "regulation_version": "2024", "pages": [13]},
+      "expect_abstain": false,
+      "reference_answer": "At least 75% attendance. A student with 60% to below 75% may be considered for medical reasons or approved sports, NCC or NSS participation, after paying the prescribed condonation with supporting documents.",
+      "source_note": "Clause 8.1"
+    },
+    {
+      "id": "passing-theory-smvec-2023",
+      "category": "passing",
+      "question": "What marks are required to pass a theory course?",
+      "admission_batch": "2025",
+      "programme": "B-tech - CSE",
+      "expected": {"document_name": "SMVEC", "regulation_version": "2023", "pages": [23]},
+      "expect_abstain": false,
+      "reference_answer": "A minimum of 40% in the End Semester Examination and a minimum of 50% when Continuous Assessment Marks and End Semester Examination marks are combined.",
+      "source_note": "Clause 11.1"
+    },
+    {
+      "id": "passing-theory-reg2-2024",
+      "category": "passing",
+      "question": "What marks are required to pass a theory course?",
+      "admission_batch": "2023",
+      "programme": "b tech aids",
+      "expected": {"document_name": "regulation 2", "regulation_version": "2024", "pages": [19]},
+      "expect_abstain": false,
+      "reference_answer": "A minimum of 40% of the 75 End Semester Examination marks and a minimum of 50% when Continuous Assessment Marks and End Semester Examination marks are combined.",
+      "source_note": "Clause 11.1"
+    },
+    {
+      "id": "distinction-smvec-2023",
+      "category": "classification",
+      "question": "What are the conditions for First Class with Distinction?",
+      "admission_batch": "2024",
+      "programme": "B-tech - CSE",
+      "expected": {"document_name": "SMVEC", "regulation_version": "2023", "pages": [25]},
+      "expect_abstain": false,
+      "reference_answer": "Complete the programme within eight consecutive semesters (six for lateral entry) with a final CGPA of 8.5 or above, passing all courses at the first attempt. One authorized complete withdrawal from examination is allowed but excludes the student from ranking.",
+      "source_note": "Clause 14.1.1"
+    },
+    {
+      "id": "distinction-reg2-2024",
+      "category": "classification",
+      "question": "What are the conditions for First Class with Distinction?",
+      "admission_batch": "2022",
+      "programme": "b tech aids",
+      "expected": {"document_name": "regulation 2", "regulation_version": "2024", "pages": [21]},
+      "expect_abstain": false,
+      "reference_answer": "Complete the programme within eight consecutive semesters (six for lateral entry) with a final CGPA of 8.5 or above, passing all courses at the first attempt. One authorized complete withdrawal from examination is allowed but excludes the student from ranking.",
+      "source_note": "Clause 14.1"
+    },
+    {
+      "id": "max-duration-smvec-2023",
+      "category": "duration",
+      "question": "What is the maximum period allowed to complete the B.Tech degree?",
+      "admission_batch": "2025",
+      "programme": "B-tech - CSE",
+      "expected": {"document_name": "SMVEC", "regulation_version": "2023", "pages": [8, 25, 26, 27]},
+      "expect_abstain": false,
+      "reference_answer": "7 years (14 semesters) from the first semester for regular entry, and 6 years for lateral entry.",
+      "source_note": "Duration of the programme; clauses 14, 15 and 16"
+    },
+    {
+      "id": "max-duration-reg2-2024",
+      "category": "duration",
+      "question": "What is the maximum period allowed to complete the B.Tech degree?",
+      "admission_batch": "2023",
+      "programme": "b tech aids",
+      "expected": {"document_name": "regulation 2", "regulation_version": "2024", "pages": [9, 21, 22]},
+      "expect_abstain": false,
+      "reference_answer": "7 years (14 semesters) from the first semester for regular entry, and 6 years for lateral entry.",
+      "source_note": "Duration of the programme; clauses 14 and 15"
+    },
+    {
+      "id": "revaluation-smvec-2023",
+      "category": "revaluation",
+      "question": "Who is eligible to apply for revaluation of answer scripts?",
+      "admission_batch": "2024",
+      "programme": "B-tech - CSE",
+      "expected": {"document_name": "SMVEC", "regulation_version": "2023", "pages": [24]},
+      "expect_abstain": false,
+      "reference_answer": "Students with a maximum of two arrears in theory papers can apply to the Controller of Examinations with the prescribed fee.",
+      "source_note": "Clause 12.2.2"
+    },
+    {
+      "id": "revaluation-reg2-2024",
+      "category": "revaluation",
+      "question": "Who is eligible to apply for revaluation of answer scripts?",
+      "admission_batch": "2022",
+      "programme": "b tech aids",
+      "expected": {"document_name": "regulation 2", "regulation_version": "2024", "pages": [19]},
+      "expect_abstain": false,
+      "reference_answer": "Students with a maximum of two arrears in theory papers can apply to the Controller of Examinations with the prescribed fee.",
+      "source_note": "Clause 12.1"
+    },
+    {
+      "id": "grades-smvec-2023",
+      "category": "grading",
+      "question": "What letter grade and grade points are given for 80 to 89 marks?",
+      "admission_batch": "2025",
+      "programme": "B-tech - CSE",
+      "expected": {"document_name": "SMVEC", "regulation_version": "2023", "pages": [24]},
+      "expect_abstain": false,
+      "reference_answer": "Grade A with 9 grade points.",
+      "source_note": "Table 13.1"
+    },
+    {
+      "id": "grades-reg2-2024",
+      "category": "grading",
+      "question": "What letter grade and grade points are given for 80 to 89 marks?",
+      "admission_batch": "2023",
+      "programme": "b tech aids",
+      "expected": {"document_name": "regulation 2", "regulation_version": "2024", "pages": [20]},
+      "expect_abstain": false,
+      "reference_answer": "Grade A with 9 grade points.",
+      "source_note": "Table 8"
+    },
+    {
+      "id": "break-of-study-smvec-2023",
+      "category": "break_of_study",
+      "question": "How can a student take a temporary break of study from the programme?",
+      "admission_batch": "2024",
+      "programme": "B-tech - CSE",
+      "expected": {"document_name": "SMVEC", "regulation_version": "2023", "pages": [26]},
+      "expect_abstain": false,
+      "reference_answer": "Apply to the Dean Academics through the HoD with reasons, supporting documents, parental consent and no-dues clearance; the Academic Council or Academic Standing Committee approves it. The student rejoins the same semester the next year, and the total period may not exceed 7 years (6 for lateral entry).",
+      "source_note": "Clause 15"
+    },
+    {
+      "id": "break-of-study-reg2-2024",
+      "category": "break_of_study",
+      "question": "How can a student take a temporary break of study from the programme?",
+      "admission_batch": "2022",
+      "programme": "b tech aids",
+      "expected": {"document_name": "regulation 2", "regulation_version": "2024", "pages": [22]},
+      "expect_abstain": false,
+      "reference_answer": "Apply to the Dean Academics through the HoD with reasons, supporting documents, parental consent and no-dues clearance; the Academic Council or Academic Standing Committee approves it. The student rejoins the same semester the next year, and the total period may not exceed 7 years (6 for lateral entry).",
+      "source_note": "Clause 15"
+    },
+    {
+      "id": "malpractice-smvec-2023",
+      "category": "discipline",
+      "question": "What happens when a student is involved in malpractice in an examination?",
+      "admission_batch": "2025",
+      "programme": "B-tech - CSE",
+      "expected": {"document_name": "SMVEC", "regulation_version": "2023", "pages": [28]},
+      "expect_abstain": false,
+      "reference_answer": "The student is issued a notice and must appear with a parent or guardian before the Complaint Redressal Committee to give a written or oral explanation of the charges.",
+      "source_note": "Clause 17.3"
+    },
+    {
+      "id": "malpractice-reg2-2024",
+      "category": "discipline",
+      "question": "What happens when a student is involved in malpractice in an examination?",
+      "admission_batch": "2023",
+      "programme": "b tech aids",
+      "expected": {"document_name": "regulation 2", "regulation_version": "2024", "pages": [23]},
+      "expect_abstain": false,
+      "reference_answer": "The student is issued a notice and must appear with a parent or guardian before the Complaint Redressal Committee to give a written or oral explanation of the charges.",
+      "source_note": "Clause 17.3"
+    },
+    {
+      "id": "honours-smvec-2023",
+      "category": "honours",
+      "question": "What CGPA is required for a B.Tech degree with Honours?",
+      "admission_batch": "2024",
+      "programme": "B-tech - CSE",
+      "expected": {"document_name": "SMVEC", "regulation_version": "2023", "pages": [13, 26]},
+      "expect_abstain": false,
+      "reference_answer": "A CGPA of not less than 8.0. Students may opt for Honours from the fourth semester if they passed every course up to the third semester at the first attempt with a CGPA of at least 8.0. To be awarded the degree with Honours they must pass all courses at the first appearance within eight consecutive semesters (six for lateral entry) and keep a CGPA of at least 8.0.",
+      "source_note": "Clauses 7.15 and 14.3"
+    },
+    {
+      "id": "abstain-no-regulation-batch",
+      "category": "abstention",
+      "question": "What is the minimum attendance needed to write the end semester examination?",
+      "admission_batch": "2019",
+      "programme": "B-tech - CSE",
+      "expected": null,
+      "expect_abstain": true,
+      "reference_answer": null,
+      "source_note": "No approved regulation applies to admission batch 2019."
+    },
+    {
+      "id": "abstain-programme-mismatch",
+      "category": "abstention",
+      "question": "What marks are required to pass a theory course?",
+      "admission_batch": "2024",
+      "programme": "b tech aids",
+      "expected": null,
+      "expect_abstain": true,
+      "reference_answer": null,
+      "source_note": "Batch 2024 is covered only for 'B-tech - CSE'; no approved regulation applies to 'b tech aids' in 2024."
+    },
+    {
+      "id": "abstain-out-of-scope",
+      "category": "abstention",
+      "question": "Who won the cricket world cup in 2011?",
+      "admission_batch": "2024",
+      "programme": "B-tech - CSE",
+      "expected": null,
+      "expect_abstain": true,
+      "reference_answer": null,
+      "source_note": "Not covered by any regulation; the system should not answer."
+    }
+  ]
+}

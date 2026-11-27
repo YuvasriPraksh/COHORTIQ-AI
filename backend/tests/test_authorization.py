@@ -29,7 +29,7 @@ from backend.app.api.deps import FORBIDDEN_DETAIL, NOT_AUTHENTICATED_DETAIL, Aut
 from backend.app.api.permissions import COHORT_FORBIDDEN_DETAIL, ensure_cohort_access
 from backend.app.api.v1 import query as query_routes
 from backend.app.api.v1 import regulations as regulation_routes
-from backend.app.auth.models import ROLE_ADMINISTRATOR, ROLE_STUDENT
+from backend.app.auth.models import ROLE_ADMINISTRATOR, ROLE_STAFF, ROLE_STUDENT
 from backend.app.auth.repository import deactivate_user, increment_token_version, update_user
 from backend.app.core.security import create_access_token
 from backend.app.main import app
@@ -95,7 +95,7 @@ class Env:
         self.verified = _seed(db_path, "Verified Exam Rules", "Verified", [BATCH], [PROGRAMME], "Examinations are held twice a year.")
         self.other_cohort = _seed(db_path, "Economics Attendance Rules", "approved", ["2023"], ["BA Econ"], text)
         self.pending_only_cohort = _seed(db_path, "MSc Draft Rules", "pending", ["2025"], ["MSc DS"], text)
-        self.student_visible = {self.approved, self.verified, self.other_cohort}
+        self.student_visible = {self.approved, self.verified}
         self.hidden = {self.pending, self.rejected, self.unreviewed, self.pending_only_cohort}
 
     def _record_generation(self, **kwargs: Any) -> GroundedAnswer:
@@ -123,6 +123,7 @@ class Env:
             options: dict[str, Any] = {
                 "admin": {"role": ROLE_ADMINISTRATOR},
                 "student": {"role": ROLE_STUDENT, "admission_batch": BATCH, "programme": PROGRAMME},
+                "staff": {"role": ROLE_STAFF, "admission_batch": BATCH, "programme": PROGRAMME},
                 "econ_student": {"role": ROLE_STUDENT, "admission_batch": "2023", "programme": "BA Econ"},
                 "msc_student": {"role": ROLE_STUDENT, "admission_batch": "2025", "programme": "MSc DS"},
                 "no_cohort_student": {"role": ROLE_STUDENT},
@@ -209,10 +210,10 @@ def test_student_lists_approved_regulations_only(env: Env) -> None:
 
 
 def test_administrator_lists_every_regulation(env: Env) -> None:
-    assert _ids(env.get(f"{API}/regulations", "admin")) == env.student_visible | env.hidden
+    assert _ids(env.get(f"{API}/regulations", "admin")) == env.student_visible | env.hidden | {env.other_cohort}
 
 
-@pytest.mark.parametrize("name", ["approved", "verified", "other_cohort"])
+@pytest.mark.parametrize("name", ["approved", "verified"])
 def test_student_reads_approved_regulation_details_and_pages(env: Env, name: str) -> None:
     regulation_id = getattr(env, name)
 
@@ -221,6 +222,18 @@ def test_student_reads_approved_regulation_details_and_pages(env: Env, name: str
 
     assert detail.status_code == 200 and detail.json()["regulation"]["id"] == regulation_id
     assert pages.status_code == 200 and len(pages.json()["pages"]) == 1
+
+
+def test_student_cannot_read_other_cohort_regulation_by_id(env: Env) -> None:
+    regulation_id = env.other_cohort
+    assert env.get(f"{API}/regulations/{regulation_id}", "student").status_code == 404
+    assert env.get(f"{API}/regulations/{regulation_id}/pages", "student").status_code == 404
+
+
+def test_staff_can_read_only_approved_regulations_for_assigned_cohort(env: Env) -> None:
+    assert _ids(env.get(f"{API}/regulations", "staff")) == env.student_visible
+    assert env.get(f"{API}/regulations/{env.other_cohort}", "staff").status_code == 404
+    assert env.get(f"{API}/regulations/{env.other_cohort}/pages", "staff").status_code == 404
 
 
 @pytest.mark.parametrize("name", ["pending", "rejected", "unreviewed"])
@@ -356,6 +369,7 @@ def test_student_cannot_view_another_cohort(env: Env, batch: str, programme: str
 def test_student_without_a_cohort_is_refused(env: Env) -> None:
     _assert_forbidden(env.get(f"{API}/cohorts/{BATCH}/{PROGRAMME}/regulations", "no_cohort_student"), COHORT_FORBIDDEN_DETAIL)
     _assert_forbidden(env.ask("no_cohort_student"), COHORT_FORBIDDEN_DETAIL)
+    assert _ids(env.get(f"{API}/regulations", "no_cohort_student")) == set()
 
 
 def test_administrator_views_any_cohort_approved_only(env: Env) -> None:
@@ -576,6 +590,16 @@ def test_cohort_check_returns_the_stored_values_for_a_matching_student() -> None
     assert ensure_cohort_access(_user(ROLE_STUDENT), BATCH, PROGRAMME) == (BATCH, PROGRAMME)
 
 
+def test_cohort_check_scopes_staff_to_their_assigned_cohort() -> None:
+    staff = _user(ROLE_STAFF)
+
+    assert ensure_cohort_access(staff, BATCH, PROGRAMME) == (BATCH, PROGRAMME)
+    with pytest.raises(HTTPException) as excinfo:
+        ensure_cohort_access(staff, "2025", PROGRAMME)
+    assert excinfo.value.status_code == 403
+    assert excinfo.value.detail == COHORT_FORBIDDEN_DETAIL
+
+
 @pytest.mark.parametrize(
     "user",
     [
@@ -585,8 +609,9 @@ def test_cohort_check_returns_the_stored_values_for_a_matching_student() -> None
         _user(ROLE_STUDENT, None, PROGRAMME),
         _user(ROLE_STUDENT, BATCH, None),
         _user(ROLE_STUDENT, "", ""),
+        _user(ROLE_STAFF, None, PROGRAMME),
     ],
-    ids=["unknown-role", "role-case-variant", "empty-role", "no-batch", "no-programme", "blank-cohort"],
+    ids=["unknown-role", "role-case-variant", "empty-role", "no-batch", "no-programme", "blank-cohort", "staff-no-batch"],
 )
 def test_cohort_check_fails_closed(user: AuthenticatedUser) -> None:
     with pytest.raises(HTTPException) as excinfo:

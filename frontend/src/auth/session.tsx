@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 
 import { ApiError } from "../api/client";
 import { fetchProfile, login } from "../api/cohortiq";
-import type { UserProfile } from "../api/types";
+import type { AccountRole, UserProfile } from "../api/types";
 
 const STORAGE_KEY = "cohortiq.session";
 /** Sign out slightly before the token expires, so a request never races the expiry. */
@@ -20,7 +20,7 @@ export type SessionState =
 
 interface SessionContextValue {
   session: SessionState;
-  signIn: (email: string, password: string) => Promise<void>;
+  signIn: (email: string, password: string, selectedRole: AccountRole) => Promise<void>;
   signOut: (notice?: string | null) => void;
   /** Call when the API answers 401: the token is no longer valid. */
   handleUnauthorized: () => void;
@@ -96,10 +96,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => () => window.clearTimeout(expiryTimer.current), []);
 
   const signIn = useCallback(
-    async (email: string, password: string) => {
-      const token = await login(email, password);
+    async (email: string, password: string, selectedRole: AccountRole) => {
+      const token = await login(email, password, selectedRole);
       const expiresAt = Date.now() + token.expires_in * 1000;
       const user = await fetchProfile(token.access_token);
+      if (user.role !== selectedRole) {
+        throw new ApiError(
+          "forbidden",
+          "Access denied. This account does not match the selected role. Choose the correct account type.",
+          403,
+        );
+      }
       writeStored({ token: token.access_token, expiresAt });
       startSession(token.access_token, user, expiresAt);
     },

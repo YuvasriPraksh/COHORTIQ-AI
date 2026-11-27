@@ -1,9 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { AskResponse } from "../api/types";
 import { formatValidationMessaging, resolveAnswerVerdict } from "../utils/answerFormatting";
 import { Citations, SourcesSearched } from "./Evidence";
 import { Notice } from "./Notice";
+import { SourceDialog, type SourceTarget } from "./PageText";
 import { RouteBadge } from "./RouteBadge";
 
 export type AnswerState =
@@ -14,10 +15,12 @@ export type AnswerState =
   | { kind: "result"; question: string; response: AskResponse };
 
 export function AnswerView({
+  token,
   state,
   onRetry,
   onCancel,
 }: {
+  token: string;
   state: AnswerState;
   onRetry: () => void;
   onCancel: () => void;
@@ -25,9 +28,13 @@ export function AnswerView({
   const headingRef = useRef<HTMLHeadingElement>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const cancelledRef = useRef<HTMLDivElement>(null);
+  const [source, setSource] = useState<SourceTarget | null>(null);
+  const [copied, setCopied] = useState(false);
 
   // Move focus cleanly once on terminal states; loading relies on its status region.
   useEffect(() => {
+    setSource(null);
+    setCopied(false);
     if (state.kind === "result") headingRef.current?.focus();
     if (state.kind === "error") errorRef.current?.focus();
     if (state.kind === "cancelled") cancelledRef.current?.focus();
@@ -126,6 +133,16 @@ export function AnswerView({
     response.status,
   );
 
+  async function copyAnswer() {
+    try {
+      await navigator.clipboard?.writeText(response.answer.answer);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* clipboard permission unavailable */
+    }
+  }
+
   return (
     <article className={`answer answer--${verdict.tone}`} aria-labelledby="answer-heading">
       <p className="answer__question">{state.question}</p>
@@ -134,7 +151,14 @@ export function AnswerView({
           <h2 id="answer-heading" ref={headingRef} tabIndex={-1} className="answer__title">
             {verdict.title}
           </h2>
-          <span className={`verdict verdict--${verdict.tone}`}>{verdict.badge}</span>
+          <div className="answer__badges">
+            <span className={`verdict verdict--${verdict.tone}`}>{verdict.badge}</span>
+            {response.answer.answer ? (
+              <button type="button" className="button button--ghost button--compact" onClick={() => void copyAnswer()}>
+                {copied ? "Copied" : "Copy"}
+              </button>
+            ) : null}
+          </div>
         </div>
         {response.route ? (
           <RouteBadge
@@ -160,8 +184,9 @@ export function AnswerView({
           </ul>
         </Notice>
       ) : null}
-      <Citations citations={response.citations} />
-      <SourcesSearched results={response.retrieval.results} />
+      <Citations citations={response.citations} results={response.retrieval.results} onOpenSource={setSource} />
+      <SourcesSearched results={response.retrieval.results} onOpenSource={setSource} />
+      {source ? <SourceDialog token={token} source={source} onClose={() => setSource(null)} /> : null}
     </article>
   );
 }

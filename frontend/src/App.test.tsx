@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
-import type { AskResponse, UserProfile } from "./api/types";
+import type { AskResponse, ChangeReview, Regulation, UserProfile } from "./api/types";
 import { SessionProvider } from "./auth/session";
 
 // ---------------------------------------------------------------------------
@@ -12,7 +12,7 @@ import { SessionProvider } from "./auth/session";
 
 const STUDENT: UserProfile = {
   id: 7,
-  email: "asha@uni.edu",
+  email: "asha@student.smvec.ac.in",
   role: "student",
   full_name: "Asha Kumar",
   admission_batch: "2024",
@@ -21,7 +21,8 @@ const STUDENT: UserProfile = {
   created_at: "2026-01-10T09:00:00Z",
 };
 
-const ADMIN: UserProfile = { ...STUDENT, id: 1, role: "administrator", full_name: null, email: "admin@uni.edu", admission_batch: null, programme: null };
+const ADMIN: UserProfile = { ...STUDENT, id: 1, role: "administrator", full_name: null, email: "admin@admin.smvec.ac.in", admission_batch: null, programme: null };
+const STAFF: UserProfile = { ...STUDENT, id: 2, role: "staff", full_name: "Taylor Teacher", email: "teacher@staff.smvec.ac.in" };
 
 const ANSWERED: AskResponse = {
   status: "answered",
@@ -114,9 +115,71 @@ function mockApi(routes: Record<string, Reply | Reply[]>) {
 const LOGIN = "POST /api/v1/auth/login";
 const ME = "GET /api/v1/auth/me";
 const ASK = "POST /api/v1/query/ask";
+const COHORTS = "GET /api/v1/cohorts";
+const AVAILABLE_COHORTS = {
+  status: 200,
+  body: { cohorts: [{ admission_batch: "2024", programme: "B-tech - CSE" }] },
+};
 const TOKEN = { status: 200, body: { access_token: "token-abc", token_type: "bearer", expires_in: 1800 } };
+const CHANGE_RADAR_REGULATIONS: Regulation[] = [
+  {
+    id: 21,
+    document_name: "Academic Regulation",
+    regulation_version: "2023",
+    effective_date: "2023-01-01",
+    applicable_batches: ["2024"],
+    applicable_programmes: ["B-tech - CSE"],
+    upload_date: "2023-01-01",
+    total_pages: 1,
+    processing_status: "extracted",
+    verification_status: "approved",
+  },
+  {
+    id: 22,
+    document_name: "Academic Regulation",
+    regulation_version: "2024",
+    effective_date: "2024-01-01",
+    applicable_batches: ["2024"],
+    applicable_programmes: ["B-tech - CSE"],
+    upload_date: "2024-01-01",
+    total_pages: 1,
+    processing_status: "extracted",
+    verification_status: "pending",
+  },
+];
+const CHANGE_REVIEW: ChangeReview = {
+  id: 11,
+  previous_regulation_id: 21,
+  previous_document_name: "Academic Regulation",
+  previous_version: "2023",
+  new_regulation_id: 22,
+  new_document_name: "Academic Regulation",
+  new_version: "2024",
+  status: "needs_review",
+  applicable_batches: ["2024"],
+  applicable_programmes: ["B-tech - CSE"],
+  changes: [
+    {
+      id: 1,
+      change_type: "modification",
+      clause: "5.1",
+      previous_page: 12,
+      new_page: 14,
+      previous_text: "Minimum attendance is 75%.",
+      new_text: "Minimum attendance is 80%.",
+      previous_text_truncated: false,
+      new_text_truncated: false,
+    },
+  ],
+  created_by: 1,
+  created_at: "2026-01-10T09:00:00Z",
+  reviewed_by: null,
+  reviewed_at: null,
+  warning: "Potential changes — review required.",
+};
 
 function renderApp() {
+  window.history.replaceState(null, "", window.location.pathname + window.location.search);
   return render(
     <SessionProvider>
       <App />
@@ -124,9 +187,16 @@ function renderApp() {
   );
 }
 
-async function signIn(user = userEvent.setup()) {
+async function signIn(user = userEvent.setup(), role: "student" | "staff" | "administrator" = "student") {
   renderApp();
-  await user.type(await screen.findByLabelText("Email"), "asha@uni.edu");
+  const title = role === "student" ? "Student" : role === "staff" ? "Staff / Teacher" : "Administrator";
+  const card = (await screen.findByRole("heading", { name: title })).closest("article");
+  if (!card) throw new Error(`Missing ${title} role card.`);
+  await user.click(within(card).getByRole("button", { name: "Continue" }));
+  await user.type(
+    await screen.findByLabelText("Email"),
+    role === "student" ? "asha@student.smvec.ac.in" : role === "staff" ? "teacher@staff.smvec.ac.in" : "admin@admin.smvec.ac.in",
+  );
   await user.type(screen.getByLabelText("Password"), "Correct-horse-9");
   await user.click(screen.getByRole("button", { name: "Sign in" }));
   return user;
@@ -148,8 +218,9 @@ describe("sign in → ask → answer", () => {
     const calls = mockApi({ [LOGIN]: TOKEN, [ME]: { status: 200, body: STUDENT }, [ASK]: { status: 200, body: ANSWERED } });
 
     const user = await signIn();
-    expect(await screen.findByText("Batch 2024")).toBeInTheDocument();
-    expect(screen.getByText("B-tech - CSE")).toBeInTheDocument();
+    const cohortSummary = screen.getByLabelText("Cohort used for your question");
+    expect(within(cohortSummary).getByText("Batch 2024")).toBeInTheDocument();
+    expect(within(cohortSummary).getByText("B-tech - CSE")).toBeInTheDocument();
     await ask(user, "What attendance do I need?");
 
     expect(await screen.findByRole("heading", { name: "Answer" })).toHaveFocus();
@@ -161,10 +232,13 @@ describe("sign in → ask → answer", () => {
     expect(within(evidence).getByText("Page 21")).toBeInTheDocument();
     expect(within(evidence).getByText(ANSWERED.citations[0]!.relevant_supporting_text!)).toBeInTheDocument();
     expect(screen.getByText("Passages searched")).toBeInTheDocument();
-    expect(screen.getByText("Grounded answer")).toBeInTheDocument();
+    expect(screen.getAllByText("Grounded answer").length).toBeGreaterThan(0);
     expect(screen.queryByText(/match 15\.0/i)).not.toBeInTheDocument();
 
-    expect(calls[0]).toMatchObject({ url: "/api/v1/auth/login", body: { email: "asha@uni.edu", password: "Correct-horse-9" } });
+    expect(calls[0]).toMatchObject({
+      url: "/api/v1/auth/login",
+      body: { email: "asha@student.smvec.ac.in", password: "Correct-horse-9", selected_role: "student" },
+    });
     const askCall = calls.find((call) => call.url === "/api/v1/query/ask")!;
     expect(askCall.headers.Authorization).toBe("Bearer token-abc");
     expect(askCall.body).toEqual({ question: "What attendance do I need?", admission_batch: "2024", programme: "B-tech - CSE" });
@@ -184,6 +258,9 @@ describe("sign in → ask → answer", () => {
     const user = userEvent.setup();
     renderApp();
 
+    const studentCard = (await screen.findByRole("heading", { name: "Student" })).closest("article");
+    if (!studentCard) throw new Error("Missing student role card.");
+    await user.click(within(studentCard).getByRole("button", { name: "Continue" }));
     await user.click(await screen.findByRole("button", { name: "Sign in" }));
 
     expect(screen.getByText("Enter your email and password.")).toBeInTheDocument();
@@ -282,7 +359,7 @@ describe("answer states", () => {
     await ask(await signIn(), "What attendance do I need?");
 
     expect(await screen.findByRole("heading", { name: "Answer without citations" })).toBeInTheDocument();
-    expect(screen.getByText("No citations attached")).toBeInTheDocument();
+    expect(screen.getAllByText("No citations attached").length).toBeGreaterThan(0);
     expect(screen.queryByText("Grounded answer")).not.toBeInTheDocument();
   });
 });
@@ -294,7 +371,7 @@ describe("errors", () => {
     await ask(await signIn(), "What attendance do I need?");
 
     expect(await screen.findByText("Your session has ended. Please sign in again.")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Know the rule. See the evidence." })).toBeInTheDocument();
   });
 
   it("shows the cohort refusal and retries on request", async () => {
@@ -407,7 +484,7 @@ describe("cohort context", () => {
   it("lets an administrator preview a cohort", async () => {
     const calls = mockApi({ [LOGIN]: TOKEN, [ME]: { status: 200, body: ADMIN }, [ASK]: { status: 200, body: ANSWERED } });
 
-    const user = await signIn();
+    const user = await signIn(userEvent.setup(), "administrator");
     expect(await screen.findByText("Administrator")).toBeInTheDocument();
     expect(screen.getByLabelText("Your question")).toBeDisabled();
     await user.type(screen.getByLabelText("Admission batch"), "2024");
@@ -430,7 +507,7 @@ describe("session", () => {
 
     renderApp();
 
-    expect(await screen.findByText("Batch 2024")).toBeInTheDocument();
+    expect(await screen.findAllByText("Batch 2024")).not.toHaveLength(0);
     expect(calls[0]!.headers.Authorization).toBe("Bearer stored");
   });
 
@@ -440,7 +517,7 @@ describe("session", () => {
 
     renderApp();
 
-    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Know the rule. See the evidence." })).toBeInTheDocument();
     expect(calls).toHaveLength(0);
     expect(window.sessionStorage.getItem("cohortiq.session")).toBeNull();
   });
@@ -449,11 +526,224 @@ describe("session", () => {
     mockApi({ [LOGIN]: TOKEN, [ME]: { status: 200, body: STUDENT } });
 
     const user = await signIn();
-    await screen.findByText("Batch 2024");
+    await screen.findAllByText("Batch 2024");
     expect(window.sessionStorage.getItem("cohortiq.session")).not.toBeNull();
     await user.click(screen.getByRole("button", { name: "Sign out" }));
 
-    await waitFor(() => expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Know the rule. See the evidence." })).toBeInTheDocument());
     expect(window.sessionStorage.getItem("cohortiq.session")).toBeNull();
+  });
+});
+
+describe("public entry and role routing", () => {
+  it("shows all three role choices and an existing-user sign-in link", async () => {
+    renderApp();
+
+    expect(await screen.findByRole("heading", { name: "Know the rule. See the evidence." })).toBeInTheDocument();
+    for (const role of ["Student", "Staff / Teacher", "Administrator"]) {
+      expect(screen.getByRole("heading", { name: role })).toBeInTheDocument();
+    }
+    expect(screen.getAllByRole("button", { name: "Continue" })).toHaveLength(3);
+    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "#/signin");
+    expect(screen.getAllByRole("link", { name: "Sign up" })[0]).toHaveAttribute("href", "#/signup");
+    expect(screen.getAllByText(/What can I do here\?/)).toHaveLength(3);
+  });
+
+  it("opens student registration from the public Sign up link", async () => {
+    mockApi({ [COHORTS]: AVAILABLE_COHORTS });
+    renderApp();
+
+    await userEvent.setup().click(screen.getAllByRole("link", { name: "Sign up" })[0]!);
+
+    expect(await screen.findByRole("heading", { name: "Create student account" })).toBeInTheDocument();
+    expect(screen.getByText("Selected role")).toBeInTheDocument();
+    expect(screen.getByText("Student", { selector: ".selected-role strong" })).toBeInTheDocument();
+  });
+
+  it("compares versions, records applicability, and submits administrator review actions", async () => {
+    const calls = mockApi({
+      [LOGIN]: TOKEN,
+      [ME]: { status: 200, body: ADMIN },
+      "GET /api/v1/regulations": { status: 200, body: { regulations: CHANGE_RADAR_REGULATIONS } },
+      "GET /api/v1/change-radar/reviews": [
+        { status: 200, body: { reviews: [] } },
+        { status: 200, body: { reviews: [CHANGE_REVIEW] } },
+      ],
+      "POST /api/v1/change-radar/reviews": { status: 201, body: CHANGE_REVIEW },
+      "PATCH /api/v1/change-radar/reviews/11": {
+        status: 200,
+        body: { ...CHANGE_REVIEW, status: "approved", reviewed_by: 1, reviewed_at: "2026-01-11T09:00:00Z" },
+      },
+    });
+    const user = userEvent.setup();
+    await signIn(user, "administrator");
+    await user.click(await screen.findByRole("link", { name: "Change Radar" }));
+    await screen.findByRole("heading", { name: "Regulation Change Radar" });
+    await user.selectOptions(screen.getByLabelText("Previous approved version"), "21");
+    await user.selectOptions(screen.getByLabelText("Newly uploaded version"), "22");
+    await user.click(screen.getByRole("button", { name: "Compare and save for review" }));
+
+    expect(await screen.findByText("Comparison saved as Needs review. No regulation was published.")).toBeInTheDocument();
+    expect(calls.find((call) => call.method === "POST" && call.url === "/api/v1/change-radar/reviews")?.body).toEqual({
+      previous_regulation_id: 21,
+      new_regulation_id: 22,
+      applicable_batches: ["2024"],
+      applicable_programmes: ["B-tech - CSE"],
+    });
+    await user.click(await screen.findByText("Academic Regulation", { selector: ".change-review summary strong" }));
+    await user.click(await screen.findByRole("button", { name: "Approve reviewed changes" }));
+    expect(await screen.findByText(/Review approved\. Students will see it only after the new regulation is also approved\./)).toBeInTheDocument();
+    expect(calls.find((call) => call.method === "PATCH" && call.url === "/api/v1/change-radar/reviews/11")?.body).toEqual({
+      status: "approved",
+    });
+  });
+
+  it("routes an authenticated staff account to the staff workspace, not admin tools", async () => {
+    const calls = mockApi({ [LOGIN]: TOKEN, [ME]: { status: 200, body: STAFF } });
+
+    await signIn(userEvent.setup(), "staff");
+
+    expect(screen.getByText("Staff / Teacher")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Regulations" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Users" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Audit Log" })).not.toBeInTheDocument();
+    expect(calls[0]!.body).toMatchObject({
+      email: "teacher@staff.smvec.ac.in",
+      selected_role: "staff",
+    });
+  });
+
+  it("does not offer public staff or administrator registration", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    const card = (await screen.findByRole("heading", { name: "Administrator" })).closest("article");
+    if (!card) throw new Error("Missing administrator role card.");
+    await user.click(within(card).getByRole("button", { name: "Continue" }));
+
+    expect(screen.getByText(/public sign-up is unavailable/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create an account" })).not.toBeInTheDocument();
+    expect(screen.getByText("Selected role")).toBeInTheDocument();
+  });
+
+  it("shows a clear denial when the backend rejects the selected role", async () => {
+    mockApi({
+      [LOGIN]: {
+        status: 403,
+        body: { detail: "Access denied. This account does not match the selected role or permitted email domain." },
+      },
+    });
+
+    await signIn();
+
+    expect(await screen.findByText(/Access denied\. This account does not match the selected role/)).toBeInTheDocument();
+    expect(window.sessionStorage.getItem("cohortiq.session")).toBeNull();
+  });
+});
+
+describe("registration", () => {
+  const REGISTER = "POST /api/v1/auth/register";
+
+  async function openRegistration() {
+    const user = userEvent.setup();
+    renderApp();
+    const card = (await screen.findByRole("heading", { name: "Student" })).closest("article");
+    if (!card) throw new Error("Missing student role card.");
+    await user.click(within(card).getByRole("button", { name: "Continue" }));
+    await user.click(await screen.findByRole("button", { name: "Create an account" }));
+    expect(screen.getByRole("heading", { name: "Create student account" })).toBeInTheDocument();
+    return user;
+  }
+
+  async function fill(user: ReturnType<typeof userEvent.setup>, email: string) {
+    await user.type(screen.getByLabelText("Full name (optional)"), "Asha Kumar");
+    await user.type(screen.getByLabelText("Student email"), email);
+    await user.type(screen.getByLabelText("Password"), "Campus-Rules-2024!");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Cohort" }), "0");
+    await user.click(screen.getByRole("button", { name: "Create account" }));
+  }
+
+  it("registers a student, then signs in and opens the workspace", async () => {
+    const calls = mockApi({
+      [COHORTS]: AVAILABLE_COHORTS,
+      [REGISTER]: { status: 201, body: { ...STUDENT, email: "asha@student.smvec.ac.in" } },
+      [LOGIN]: TOKEN,
+      [ME]: { status: 200, body: STUDENT },
+    });
+
+    const user = await openRegistration();
+    await fill(user, "Asha@Student.SMVEC.ac.in");
+
+    expect(await screen.findAllByText("Batch 2024")).not.toHaveLength(0);
+    const registration = calls.find((call) => call.url === "/api/v1/auth/register")!;
+    expect(registration).toMatchObject({
+      url: "/api/v1/auth/register",
+      body: {
+        email: "asha@student.smvec.ac.in",
+        password: "Campus-Rules-2024!",
+        admission_batch: "2024",
+        programme: "B-tech - CSE",
+        full_name: "Asha Kumar",
+      },
+    });
+    expect(registration.body).not.toHaveProperty("role");
+    expect(calls.find((call) => call.url === "/api/v1/auth/login")).toMatchObject({
+      url: "/api/v1/auth/login",
+      body: { email: "asha@student.smvec.ac.in", selected_role: "student" },
+    });
+  });
+
+  it("rejects other email domains before calling the API", async () => {
+    const calls = mockApi({ [COHORTS]: AVAILABLE_COHORTS });
+
+    const user = await openRegistration();
+    await fill(user, "asha@gmail.com");
+
+    expect(await screen.findByText("Use your student email address ending in @student.smvec.ac.in.")).toBeInTheDocument();
+    expect(calls.some((call) => call.url === "/api/v1/auth/register")).toBe(false);
+  });
+
+  it("offers sign-in when the account already exists", async () => {
+    mockApi({
+      [COHORTS]: AVAILABLE_COHORTS,
+      [REGISTER]: { status: 409, body: { detail: "An account with this email already exists. Please sign in instead." } },
+    });
+
+    const user = await openRegistration();
+    await fill(user, "asha@student.smvec.ac.in");
+
+    expect(await screen.findByText(/already exists/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Go to sign in" }));
+    expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+  });
+
+  it("shows the API's password-policy message", async () => {
+    mockApi({
+      [COHORTS]: AVAILABLE_COHORTS,
+      [REGISTER]: {
+        status: 422,
+        body: { detail: [{ type: "value_error", loc: ["body", "password"], msg: "Password does not meet the password policy: Use at least 12 characters." }] },
+      },
+    });
+
+    const user = await openRegistration();
+    await fill(user, "asha@student.smvec.ac.in");
+
+    expect(await screen.findByText(/Use at least 12 characters/)).toBeInTheDocument();
+  });
+
+  it("shows a retryable cohort-list error and recovers when the API responds", async () => {
+    mockApi({
+      [COHORTS]: [
+        { status: 404, body: { detail: "Not found" } },
+        AVAILABLE_COHORTS,
+      ],
+    });
+
+    const user = await openRegistration();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Available cohorts could not be loaded");
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByRole("combobox", { name: "Cohort" })).toHaveTextContent("Batch 2024 · B-tech - CSE");
   });
 });

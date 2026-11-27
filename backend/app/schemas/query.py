@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.chunking import _normalize_strategy
 from app.models import GroundedAnswer, GroundedCitation
+from backend.app.schemas.routing import RouteDecision
 from backend.app.core.config import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_OVERLAP,
@@ -100,9 +101,10 @@ class GroundedAnswerResponse(BaseModel):
     """Public response for a student question.
 
     Contains only the declared fields: ``status``, ``answer``, ``citations``,
-    ``validation_issues`` and ``retrieval``. The internal workflow result also
-    carries the full retrieval ``corpus`` (used by the pipeline and Streamlit);
-    it is intentionally not part of the API response and is dropped here.
+    ``validation_issues``, ``retrieval`` and ``route``. The internal workflow
+    result also carries the full retrieval ``corpus`` (used by the pipeline and
+    Streamlit); it is intentionally not part of the API response and is dropped
+    here.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -112,6 +114,10 @@ class GroundedAnswerResponse(BaseModel):
     citations: List[GroundedCitation] = Field(default_factory=list)
     validation_issues: List[str] = Field(default_factory=list)
     retrieval: RetrievalResponse
+    route: Optional[RouteDecision] = Field(
+        default=None,
+        description="How the question was routed: out_of_scope, clarify, clause_lookup, low_evidence or general.",
+    )
 
 
 class InsufficientEvidenceResponse(GroundedAnswerResponse):

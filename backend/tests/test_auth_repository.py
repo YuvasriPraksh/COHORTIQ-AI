@@ -41,6 +41,7 @@ from backend.app.auth.repository import (
     get_user_by_id,
     increment_token_version,
     init_auth_tables,
+    USERS_TABLE_SQL,
     serialize_user,
     to_authenticated_user,
     update_user,
@@ -124,6 +125,30 @@ def test_init_auth_tables_is_idempotent_and_keeps_users(db_path: Path) -> None:
     init_auth_tables(db_path)
 
     assert get_user_by_email("keep@example.edu", db_path=db_path) is not None
+
+
+def test_init_auth_tables_migrates_legacy_role_check_without_losing_users(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-role-check.db"
+    legacy_sql = USERS_TABLE_SQL.replace("'student', 'staff', 'administrator'", "'student', 'administrator'")
+    assert legacy_sql != USERS_TABLE_SQL
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute(legacy_sql)
+
+    original = create_user("keep@example.edu", strong_password(), "student", db_path=path)
+
+    init_auth_tables(path)
+    init_auth_tables(path)
+    staff = create_user(
+        "teacher@staff.smvec.ac.in",
+        strong_password(),
+        "staff",
+        admission_batch="2024",
+        programme="BSc CS",
+        db_path=path,
+    )
+
+    assert get_user_by_email(original.email, db_path=path) == original
+    assert staff.role == "staff"
 
 
 def test_existing_regulation_tables_are_unchanged(tmp_path: Path) -> None:

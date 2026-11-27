@@ -3,10 +3,11 @@
 Access (see :mod:`backend.app.api.permissions`):
 
 - Ingestion and verification changes: administrators only.
-- Regulation list, details and pages: any signed-in user, but students see
+- Regulation list, details and pages: any signed-in user, but non-administrators see
   approved regulations only; an unapproved regulation is reported to a student
   exactly like a missing one (404).
-- Cohort regulations: administrators may view any cohort, students only the
+- Cohort list (names only, from approved regulations): public.
+- Cohort regulations: administrators may view any cohort, students and staff only the
   cohort stored on their account.
 """
 
@@ -42,6 +43,7 @@ from backend.app.api.permissions import (
 from backend.app.audit.repository import _STATUS_VALUE, append_audit_event
 from backend.app.core.config import MIB, Settings, format_byte_size, get_settings
 from backend.app.schemas.regulations import (
+    CohortListResponse,
     DocumentPageListResponse,
     RegulationDetailResponse,
     RegulationIngestionResult,
@@ -288,9 +290,14 @@ def list_regulations(
     db_path: Optional[str] = Depends(get_db_path),
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> RegulationListResponse:
-    """Return stored regulations: all for administrators, approved only for students."""
+    """Return all regulations to administrators and approved own-cohort records otherwise."""
+    if not is_administrator(user) and (not user.admission_batch or not user.programme):
+        return RegulationListResponse(regulations=[])
     regulations = regulation_service.list_regulations(
-        db_path=db_path, approved_only=not is_administrator(user)
+        db_path=db_path,
+        approved_only=not is_administrator(user),
+        admission_batch=user.admission_batch,
+        programme=user.programme,
     )
     return RegulationListResponse(regulations=regulations)
 
@@ -309,6 +316,12 @@ def get_regulation(
     regulation = regulation_service.get_regulation_details(
         regulation_id=regulation_id, db_path=db_path, approved_only=not is_administrator(user)
     )
+    if regulation is not None and not is_administrator(user) and (
+        not user.admission_batch
+        or not user.programme
+        or not regulation_service.is_applicable_to_cohort(regulation, user.admission_batch, user.programme)
+    ):
+        regulation = None
     if regulation is None:
         raise HTTPException(status_code=404, detail=REGULATION_NOT_FOUND_DETAIL)
     return RegulationDetailResponse(regulation=regulation)
@@ -333,6 +346,12 @@ def get_regulation_pages(
     regulation = regulation_service.get_regulation_details(
         regulation_id=regulation_id, db_path=db_path, approved_only=not is_administrator(user)
     )
+    if regulation is not None and not is_administrator(user) and (
+        not user.admission_batch
+        or not user.programme
+        or not regulation_service.is_applicable_to_cohort(regulation, user.admission_batch, user.programme)
+    ):
+        regulation = None
     if regulation is None:
         raise HTTPException(status_code=404, detail=REGULATION_NOT_FOUND_DETAIL)
 
@@ -340,6 +359,16 @@ def get_regulation_pages(
         regulation_id=regulation_id, db_path=db_path
     )
     return DocumentPageListResponse(regulation_id=regulation_id, pages=pages)
+
+
+@router.get("/cohorts", response_model=CohortListResponse)
+def list_cohorts(db_path: Optional[str] = Depends(get_db_path)) -> CohortListResponse:
+    """List the cohorts that approved regulations cover (public, used by registration).
+
+    Returns only admission batch and programme names: no documents, identifiers
+    or account data.
+    """
+    return CohortListResponse(cohorts=regulation_service.list_approved_cohorts(db_path=db_path))
 
 
 @router.get(

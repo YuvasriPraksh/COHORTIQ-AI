@@ -553,11 +553,11 @@ def test_cli_bootstrap_creates_the_audit_table_and_records_the_administrator(tmp
     db_path = tmp_path / "fresh" / "cohortiq.db"
     password = strong_password()
 
-    code, output = _run_cli(db_path, "first.admin@uni.edu", password, full_name="Private Name")
+    code, output = _run_cli(db_path, "first.admin@admin.smvec.ac.in", password, full_name="Private Name")
 
     assert code == 0, output
     [event] = _cli_events(db_path)
-    user = auth_repository.get_user_by_email("first.admin@uni.edu", db_path=db_path)
+    user = auth_repository.get_user_by_email("first.admin@admin.smvec.ac.in", db_path=db_path)
     assert (event["action"], event["outcome"], event["actor_type"], event["actor_user_id"], event["actor_role"]) == (
         "user.created", "success", "cli", None, None)
     assert (event["target_type"], event["target_id"], event["details"]) == ("user", user.id, {"role": "administrator"})
@@ -570,9 +570,9 @@ def test_cli_bootstrap_creates_the_audit_table_and_records_the_administrator(tmp
 
 def test_cli_duplicate_records_nothing(tmp_path: Path) -> None:
     db_path = tmp_path / "dup.db"
-    assert _run_cli(db_path, "dup@uni.edu", strong_password())[0] == 0
+    assert _run_cli(db_path, "dup@admin.smvec.ac.in", strong_password())[0] == 0
 
-    code, output = _run_cli(db_path, "DUP@uni.edu", strong_password())
+    code, output = _run_cli(db_path, "DUP@admin.smvec.ac.in", strong_password())
 
     assert code == 1 and "already exists" in output
     assert len(_cli_events(db_path)) == 1
@@ -583,12 +583,12 @@ def test_cli_audit_failure_creates_no_account(tmp_path: Path, monkeypatch: pytes
     password = strong_password()
     monkeypatch.setattr(auth_repository, "append_audit_event", _failing_append)
 
-    code, output = _run_cli(db_path, "atomic.admin@uni.edu", password)
+    code, output = _run_cli(db_path, "atomic.admin@admin.smvec.ac.in", password)
 
     assert code == 1
     assert "could not be stored. No account was created." in output
     assert "simulated" not in output and password not in output
-    assert auth_repository.get_user_by_email("atomic.admin@uni.edu", db_path=db_path) is None
+    assert auth_repository.get_user_by_email("atomic.admin@admin.smvec.ac.in", db_path=db_path) is None
     assert _cli_events(db_path) == []
 
 

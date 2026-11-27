@@ -32,7 +32,7 @@ from backend.app.api.permissions import ROUTE_PERMISSIONS, Access
 from backend.app.api.v1 import query as query_routes
 from backend.app.api.v1 import regulations as regulation_routes
 from backend.app.audit.repository import init_audit_tables
-from backend.app.auth.models import ROLE_ADMINISTRATOR, ROLE_STUDENT
+from backend.app.auth.models import ROLE_ADMINISTRATOR, ROLE_STAFF, ROLE_STUDENT
 from backend.app.main import app
 from backend.tests.auth_support import create_signed_in_account, make_auth_settings, use_auth_database
 
@@ -116,8 +116,13 @@ def test_inventory_lists_the_expected_classifications() -> None:
     assert {key for key, access in ROUTE_PERMISSIONS.items() if access is Access.ADMINISTRATOR} == {
         ("POST", f"{api}/regulations/ingest"),
         ("PATCH", f"{api}/regulations/{{regulation_id}}/verification"),
+        ("GET", f"{api}/change-radar/reviews"),
+        ("POST", f"{api}/change-radar/reviews"),
+        ("GET", f"{api}/change-radar/reviews/{{review_id}}"),
+        ("PATCH", f"{api}/change-radar/reviews/{{review_id}}"),
         ("GET", f"{api}/admin/users"),
         ("POST", f"{api}/admin/users"),
+        ("POST", f"{api}/admin/users/staff"),
         ("GET", f"{api}/admin/users/{{user_id}}"),
         ("PATCH", f"{api}/admin/users/{{user_id}}"),
         ("PATCH", f"{api}/admin/users/{{user_id}}/role"),
@@ -135,7 +140,9 @@ def test_inventory_lists_the_expected_classifications() -> None:
         ("GET", "/docs/oauth2-redirect"),
         ("GET", "/redoc"),
         ("GET", f"{api}/health"),
+        ("GET", f"{api}/cohorts"),  # cohort names for the registration form
         ("POST", f"{api}/auth/login"),
+        ("POST", f"{api}/auth/register"),  # student self-registration
     }
 
 
@@ -225,7 +232,7 @@ def _request(client: TestClient, method: str, path: str, headers: dict[str, str]
 
 
 @pytest.fixture
-def probe_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestClient, Any, Any]]:
+def probe_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestClient, Any, Any, Any]]:
     db_path = tmp_path / "probe.db"
     init_database(db_path)
     init_audit_tables(db_path)
@@ -234,12 +241,13 @@ def probe_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tu
     monkeypatch.setitem(app.dependency_overrides, regulation_routes.get_db_path, lambda: str(db_path))
     monkeypatch.setitem(app.dependency_overrides, query_routes.get_db_path, lambda: str(db_path))
     student = create_signed_in_account(db_path, settings, ROLE_STUDENT, admission_batch="2024", programme="BSc CS")
+    staff = create_signed_in_account(db_path, settings, ROLE_STAFF, admission_batch="2024", programme="BSc CS")
     admin = create_signed_in_account(db_path, settings, ROLE_ADMINISTRATOR)
-    yield TestClient(app), student, admin
+    yield TestClient(app), student, staff, admin
 
 
 @pytest.mark.parametrize("key", sorted(ROUTE_PERMISSIONS), ids=lambda key: f"{key[0]} {key[1]}")
-def test_anonymous_access_matches_classification(probe_client: tuple[TestClient, Any, Any], key: tuple[str, str]) -> None:
+def test_anonymous_access_matches_classification(probe_client: tuple[TestClient, Any, Any, Any], key: tuple[str, str]) -> None:
     client = probe_client[0]
     response = _request(client, *key)
 
@@ -255,14 +263,19 @@ def test_anonymous_access_matches_classification(probe_client: tuple[TestClient,
 @pytest.mark.parametrize(
     "key", sorted(k for k, access in ROUTE_PERMISSIONS.items() if access is Access.ADMINISTRATOR), ids=lambda key: f"{key[0]} {key[1]}"
 )
-def test_students_are_refused_administrator_routes(probe_client: tuple[TestClient, Any, Any], key: tuple[str, str]) -> None:
-    client, student, admin = probe_client
+def test_non_admin_roles_are_refused_administrator_routes(
+    probe_client: tuple[TestClient, Any, Any, Any], key: tuple[str, str]
+) -> None:
+    client, student, staff, admin = probe_client
 
     student_response = _request(client, *key, headers=student.headers)
+    staff_response = _request(client, *key, headers=staff.headers)
     admin_response = _request(client, *key, headers=admin.headers)
 
     assert student_response.status_code == 403
     assert student_response.json() == {"detail": deps.FORBIDDEN_DETAIL}
+    assert staff_response.status_code == 403
+    assert staff_response.json() == {"detail": deps.FORBIDDEN_DETAIL}
     assert admin_response.status_code not in (401, 403)  # authorized: reaches validation or succeeds
     assert admin_response.status_code < 500
 
@@ -270,29 +283,30 @@ def test_students_are_refused_administrator_routes(probe_client: tuple[TestClien
 @pytest.mark.parametrize(
     "key", sorted(k for k, access in ROUTE_PERMISSIONS.items() if access is Access.AUTHENTICATED), ids=lambda key: f"{key[0]} {key[1]}"
 )
-def test_authenticated_routes_admit_both_roles(probe_client: tuple[TestClient, Any, Any], key: tuple[str, str]) -> None:
-    client, student, admin = probe_client
+def test_authenticated_routes_admit_all_roles(probe_client: tuple[TestClient, Any, Any, Any], key: tuple[str, str]) -> None:
+    client, student, staff, admin = probe_client
 
     # A student may still be refused on cohort or visibility grounds, but never
     # because of authentication or the administrator-only gate.
     assert _request(client, *key, headers=student.headers).json() != {"detail": deps.FORBIDDEN_DETAIL}
+    assert _request(client, *key, headers=staff.headers).json() != {"detail": deps.FORBIDDEN_DETAIL}
     assert _request(client, *key, headers=student.headers).status_code != 401
     assert _request(client, *key, headers=admin.headers).status_code not in (401, 403)
 
 
 @pytest.mark.parametrize(
     "method, path",
-    [("GET", "/api/v1/does-not-exist"), ("GET", "/api/v1/admin"), ("POST", "/api/v1/users"), ("GET", "/api/v1/auth/register")],
+    [("GET", "/api/v1/does-not-exist"), ("GET", "/api/v1/admin"), ("POST", "/api/v1/users"), ("GET", "/api/v1/auth/signup")],
 )
-def test_unknown_routes_return_404(probe_client: tuple[TestClient, Any, Any], method: str, path: str) -> None:
-    client, student, admin = probe_client
+def test_unknown_routes_return_404(probe_client: tuple[TestClient, Any, Any, Any], method: str, path: str) -> None:
+    client, student, _staff, admin = probe_client
 
     for headers in ({}, student.headers, admin.headers):
         assert client.request(method, path, headers=headers).status_code == 404
 
 
-def test_unregistered_methods_on_known_paths_are_refused(probe_client: tuple[TestClient, Any, Any]) -> None:
-    client, _student, admin = probe_client
+def test_unregistered_methods_on_known_paths_are_refused(probe_client: tuple[TestClient, Any, Any, Any]) -> None:
+    client, _student, _staff, admin = probe_client
 
     assert client.delete("/api/v1/regulations/1", headers=admin.headers).status_code == 405
     assert client.put("/api/v1/regulations/1/verification", headers=admin.headers).status_code == 405

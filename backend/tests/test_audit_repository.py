@@ -23,6 +23,7 @@ from app.database import get_connection, init_database, insert_regulation_with_p
 from backend.app.audit import repository as audit
 from backend.app.audit.repository import (
     ACTIONS,
+    AUDIT_TABLE_SQL,
     MAX_DETAILS_BYTES,
     AuditEvent,
     AuditEventError,
@@ -124,6 +125,16 @@ VALID_EVENTS: dict[str, dict[str, Any]] = {
     "regulation.verification_changed": {"outcome": "success", "actor_type": "user", "actor_user_id": 1,
                                         "actor_role": "administrator", "target_type": "regulation", "target_id": 4,
                                         "details": {"old_status": "pending", "new_status": "approved"}},
+    "regulation.change_reviewed": {"outcome": "success", "actor_type": "user", "actor_user_id": 1,
+                                   "actor_role": "administrator", "target_type": "regulation", "target_id": 4,
+                                   "details": {"old_status": None, "new_status": "needs_review"}},
+    "query.answered": {
+        "outcome": "success",
+        "actor_type": "user",
+        "actor_user_id": 3,
+        "actor_role": "student",
+        "details": {"route": "general", "answer_status": "answered", "admission_batch": "2024", "programme": "BSc CS"},
+    },
     "authorization.denied": {"outcome": "denied", "actor_type": "user", "actor_user_id": 2, "actor_role": "student",
                              "details": {"method": "PATCH", "path": "/api/v1/regulations/{regulation_id}/verification",
                                          "reason": "insufficient_role"}},
@@ -160,6 +171,45 @@ def test_initialization_is_idempotent_and_keeps_events(db_path: Path) -> None:
 
     assert _schema(db_path, "trigger") == TRIGGERS
     assert [row[0] for row in _rows(db_path)] == [first.id]
+
+
+def test_initialization_migrates_legacy_role_check_and_preserves_events(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-audit-role-check.db"
+    legacy_sql = AUDIT_TABLE_SQL.replace("'student', 'staff', 'administrator'", "'student', 'administrator'")
+    assert legacy_sql != AUDIT_TABLE_SQL
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute(legacy_sql)
+
+    append_audit_event(
+        "user.created",
+        outcome="success",
+        actor_type="user",
+        actor_user_id=1,
+        actor_role="student",
+        target_type="user",
+        target_id=2,
+        details={"role": "student"},
+        db_path=path,
+    )
+
+    init_audit_tables(path)
+    init_audit_tables(path)
+    append_audit_event(
+        "user.created",
+        outcome="success",
+        actor_type="user",
+        actor_user_id=3,
+        actor_role="staff",
+        target_type="user",
+        target_id=4,
+        details={"role": "staff"},
+        db_path=path,
+    )
+
+    rows = _rows(path)
+    assert len(rows) == 2
+    assert rows[0][6] == "student"
+    assert rows[1][6] == "staff"
 
 
 def test_initialization_leaves_existing_tables_and_data_unchanged(tmp_path: Path) -> None:

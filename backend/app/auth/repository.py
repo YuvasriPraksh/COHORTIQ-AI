@@ -11,7 +11,7 @@ Security properties
   even by mistake.
 - Emails are normalized (trimmed, lower-cased) and unique case-insensitively
   (``COLLATE NOCASE`` plus normalization).
-- Roles are restricted to ``student`` and ``administrator`` by a CHECK constraint.
+- Roles are restricted to ``student``, ``staff`` and ``administrator`` by a CHECK constraint.
 - ``UserRecord`` hides the hash from ``repr``; :func:`serialize_user` returns
   only public fields and never the hash or internal security counters.
 - Changing a password, role or email, or deactivating an account, increments
@@ -34,7 +34,7 @@ from typing import Any, Optional
 
 from app.database import get_connection
 from backend.app.audit.repository import append_audit_event
-from backend.app.auth.models import ROLE_ADMINISTRATOR, ROLES, AuthenticatedUser
+from backend.app.auth.models import ROLE_ADMINISTRATOR, ROLE_STAFF, ROLE_STUDENT, ROLES, AuthenticatedUser
 from backend.app.auth.password_policy import validate_password_strength
 from backend.app.core.security import hash_password
 
@@ -64,7 +64,7 @@ USERS_TABLE_SQL = """
         email TEXT NOT NULL UNIQUE COLLATE NOCASE
             CHECK (length(trim(email)) > 0 AND length(email) <= 254),
         password_hash TEXT NOT NULL CHECK (password_hash LIKE '$argon2id$%'),
-        role TEXT NOT NULL CHECK (role IN ('student', 'administrator')),
+        role TEXT NOT NULL CHECK (role IN ('student', 'staff', 'administrator')),
         full_name TEXT,
         admission_batch TEXT,
         programme TEXT,
@@ -142,7 +142,7 @@ def normalize_email(email: Any) -> str:
 
 def _validate_role(role: Any) -> str:
     if role not in ROLES:
-        raise ValueError("Role must be 'student' or 'administrator'.")
+        raise ValueError("Role must be 'student', 'staff' or 'administrator'.")
     return role
 
 
@@ -231,8 +231,26 @@ def _integrity_error(error: sqlite3.IntegrityError) -> ValueError:
 
 
 def init_auth_tables(db_path: str | Path | None = None) -> None:
-    """Create the ``users`` table if it does not exist. Never alters other tables."""
+    """Create or safely migrate the ``users`` role constraint."""
     with closing(get_connection(db_path)) as connection:
+        existing = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users';"
+        ).fetchone()
+        if existing and "'staff'" not in (existing["sql"] or ""):
+            connection.isolation_level = None
+            connection.execute("BEGIN IMMEDIATE;")
+            try:
+                connection.execute("ALTER TABLE users RENAME TO users_before_staff;")
+                connection.execute(USERS_TABLE_SQL)
+                connection.execute(
+                    f"INSERT INTO users ({_SELECT_COLUMNS}) SELECT {_SELECT_COLUMNS} FROM users_before_staff;"
+                )
+                connection.execute("DROP TABLE users_before_staff;")
+                connection.execute("COMMIT;")
+            except BaseException:
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK;")
+                raise
         connection.execute(USERS_TABLE_SQL)
         connection.commit()
 
@@ -279,6 +297,66 @@ def create_user(
 
     created = get_user_by_id(user_id, db_path=db_path)
     assert created is not None
+    return created
+
+
+def register_student(
+    email: str,
+    password: str,
+    *,
+    admission_batch: str,
+    programme: str,
+    full_name: Optional[str] = None,
+    db_path: str | Path | None = None,
+) -> UserRecord:
+    """Create a student account through public self-registration, audited atomically.
+
+    The role is always ``student``. The account and its ``user.created`` audit
+    event (actor ``anonymous``; details ``role``, ``admission_batch``,
+    ``programme``) are written in one transaction: both are stored or neither
+    is. Email-domain rules are enforced by the API request schema.
+
+    Raises:
+        ValueError, WeakPasswordError, DuplicateEmailError: as :func:`create_user`.
+    """
+    values = _new_user_values(
+        email,
+        password,
+        ROLE_STUDENT,
+        full_name=full_name,
+        admission_batch=admission_batch,
+        programme=programme,
+        is_active=True,
+    )
+    with closing(get_connection(db_path)) as connection:
+        connection.isolation_level = None  # explicit transaction control
+        connection.execute("BEGIN IMMEDIATE;")
+        try:
+            try:
+                user_id = _insert_user(connection, values)
+            except sqlite3.IntegrityError as error:
+                raise _integrity_error(error) from None
+            created = _row_to_record(
+                connection.execute(f"SELECT {_SELECT_COLUMNS} FROM users WHERE id = ?;", (user_id,)).fetchone()
+            )
+            append_audit_event(
+                "user.created",
+                outcome="success",
+                actor_type="anonymous",
+                target_type="user",
+                target_id=user_id,
+                details={
+                    "role": ROLE_STUDENT,
+                    "admission_batch": created.admission_batch,
+                    "programme": created.programme,
+                },
+                connection=connection,
+            )
+            connection.execute("COMMIT;")
+        except BaseException:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK;")
+            raise
     return created
 
 

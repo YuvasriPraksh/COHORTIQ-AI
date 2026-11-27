@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from typing import Optional
 
 ROLE_STUDENT = "student"
+ROLE_STAFF = "staff"
 ROLE_ADMINISTRATOR = "administrator"
-ROLES = (ROLE_STUDENT, ROLE_ADMINISTRATOR)
+ROLES = (ROLE_STUDENT, ROLE_STAFF, ROLE_ADMINISTRATOR)
 
 
 @dataclass(frozen=True)

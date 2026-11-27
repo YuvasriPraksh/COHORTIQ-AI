@@ -150,7 +150,8 @@ def test_grounded_answer_response_and_insufficient_evidence_serialization() -> N
     assert dumped["retrieval"]["results"] == []
     # The workflow supplies its internal corpus, but the public envelope drops it.
     assert "corpus" not in dumped
-    assert set(dumped) == {"status", "answer", "citations", "validation_issues", "retrieval"}
+    assert set(dumped) == {"status", "answer", "citations", "validation_issues", "retrieval", "route"}
+    assert dumped["route"] is None  # set only by the adaptive router
 
 
 def test_regulation_response_serialization() -> None:

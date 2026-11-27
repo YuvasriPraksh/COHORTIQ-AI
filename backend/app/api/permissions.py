@@ -6,7 +6,7 @@ documentation routes FastAPI adds:
 ``PUBLIC``
     No token required.
 ``AUTHENTICATED``
-    Any active student or administrator (``get_current_user``). Some of these
+    Any active student, staff member or administrator (``get_current_user``). Some of these
     routes narrow results further by role, as described in their handlers.
 ``ADMINISTRATOR``
     Administrators only (``require_administrator``); students receive 403.
@@ -28,7 +28,7 @@ from typing import Callable, Mapping, Optional
 
 from fastapi import HTTPException, status
 
-from backend.app.auth.models import ROLE_ADMINISTRATOR, ROLE_STUDENT, AuthenticatedUser
+from backend.app.auth.models import ROLE_ADMINISTRATOR, ROLE_STAFF, ROLE_STUDENT, AuthenticatedUser
 from backend.app.core.config import get_settings
 
 COHORT_FORBIDDEN_DETAIL = "You can only access regulations for your own cohort."
@@ -43,7 +43,7 @@ ADMINISTRATOR_ONLY_RESPONSES: dict[int | str, dict] = {
 }
 COHORT_SCOPED_RESPONSES: dict[int | str, dict] = {
     **UNAUTHENTICATED_RESPONSE,
-    403: {"description": "Students may only use the admission batch and programme of their own account."},
+    403: {"description": "Students and staff may only use the admission batch and programme of their own account."},
 }
 
 
@@ -64,10 +64,13 @@ ROUTE_PERMISSIONS: Mapping[tuple[str, str], Access] = MappingProxyType(
         ("GET", "/docs/oauth2-redirect"): Access.PUBLIC,
         ("GET", "/redoc"): Access.PUBLIC,
         ("GET", f"{_API}/health"): Access.PUBLIC,
+        # Cohort names covered by approved regulations (registration form)
+        ("GET", f"{_API}/cohorts"): Access.PUBLIC,
         # Authentication
         ("POST", f"{_API}/auth/login"): Access.PUBLIC,
+        ("POST", f"{_API}/auth/register"): Access.PUBLIC,  # students only, configured student domain
         ("GET", f"{_API}/auth/me"): Access.AUTHENTICATED,
-        # Regulation reads: students see approved regulations only
+        # Regulation reads: non-administrators see approved regulations only.
         ("GET", f"{_API}/regulations"): Access.AUTHENTICATED,
         ("GET", f"{_API}/regulations/{{regulation_id}}"): Access.AUTHENTICATED,
         ("GET", f"{_API}/regulations/{{regulation_id}}/pages"): Access.AUTHENTICATED,
@@ -77,9 +80,17 @@ ROUTE_PERMISSIONS: Mapping[tuple[str, str], Access] = MappingProxyType(
         # Regulation management
         ("POST", f"{_API}/regulations/ingest"): Access.ADMINISTRATOR,
         ("PATCH", f"{_API}/regulations/{{regulation_id}}/verification"): Access.ADMINISTRATOR,
-        # Administrator user management (students only; administrators are CLI-created)
+        # Change Radar comparisons and moderation are administrator-only. Public
+        # cohort updates are derived from the authenticated account, never query parameters.
+        ("GET", f"{_API}/change-radar/reviews"): Access.ADMINISTRATOR,
+        ("POST", f"{_API}/change-radar/reviews"): Access.ADMINISTRATOR,
+        ("GET", f"{_API}/change-radar/reviews/{{review_id}}"): Access.ADMINISTRATOR,
+        ("PATCH", f"{_API}/change-radar/reviews/{{review_id}}"): Access.ADMINISTRATOR,
+        ("GET", f"{_API}/updates"): Access.AUTHENTICATED,
+        # Administrator user management; administrators are provisioned by the CLI.
         ("GET", f"{_API}/admin/users"): Access.ADMINISTRATOR,
         ("POST", f"{_API}/admin/users"): Access.ADMINISTRATOR,
+        ("POST", f"{_API}/admin/users/staff"): Access.ADMINISTRATOR,
         ("GET", f"{_API}/admin/users/{{user_id}}"): Access.ADMINISTRATOR,
         ("PATCH", f"{_API}/admin/users/{{user_id}}"): Access.ADMINISTRATOR,
         ("PATCH", f"{_API}/admin/users/{{user_id}}/role"): Access.ADMINISTRATOR,
@@ -131,11 +142,11 @@ def ensure_cohort_access(
 ) -> tuple[str, str]:
     """Return the cohort the user may act on, or raise HTTP 403.
 
-    Administrators may use any cohort. A student may only use the admission
-    batch and programme stored on their account; the values must match exactly
+    Administrators may use any cohort. Students and staff may only use the
+    admission batch and programme stored on their account; the values must match exactly
     (as regulation applicability matching does), and the stored values are
-    returned so the caller never proceeds with request-supplied ones. Students
-    without a stored cohort, and any unrecognized role, are refused.
+    returned so the caller never proceeds with request-supplied ones.
+    Students and staff without a stored cohort, and any unrecognized role, are refused.
 
     ``record_denial(user, reason)`` is called before a refusal is raised so it
     can be audited (see ``backend.app.api.deps.get_denial_recorder``).
@@ -143,7 +154,7 @@ def ensure_cohort_access(
     if is_administrator(user):
         return admission_batch, programme
     if (
-        user.role == ROLE_STUDENT
+        user.role in (ROLE_STUDENT, ROLE_STAFF)
         and user.admission_batch
         and user.programme
         and admission_batch == user.admission_batch
