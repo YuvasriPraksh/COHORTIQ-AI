@@ -271,12 +271,25 @@ def test_parser_defines_no_password_option() -> None:
     assert destinations == {"help", "email", "full_name", "db_path"}
 
 
-def test_api_exposes_no_user_or_administrator_creation_route() -> None:
-    paths = TestClient(api_app).get("/openapi.json").json()["paths"]
+def test_api_cannot_create_or_promote_administrators() -> None:
+    """Administrators are created only by this script.
 
-    # Stage 3 adds only sign-in and the read-only profile; nothing creates accounts.
+    Since Stage 5 the API can create accounts, but only students: the single
+    account-creation operation takes a request schema without a role field.
+    Promotion requests are refused by the repository (tested in
+    test_admin_users_api.py). There is still no registration or sign-up route.
+    """
+    schema = TestClient(api_app).get("/openapi.json").json()
+    paths = schema["paths"]
+
     assert {method for method in paths["/api/v1/auth/login"]} == {"post"}
     assert {method for method in paths["/api/v1/auth/me"]} == {"get"}
+    creation = paths["/api/v1/admin/users"]["post"]
+    body_ref = creation["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+    body = schema["components"]["schemas"][body_ref.rsplit("/", 1)[-1]]
+    assert body_ref.endswith("/StudentCreateRequest")
+    assert "role" not in body["properties"] and body.get("additionalProperties") is False
+    assert {method for method in paths["/api/v1/admin/users/{user_id}/role"]} == {"patch"}
     assert set(paths) == {
         "/",
         "/api/v1/health",
@@ -289,8 +302,22 @@ def test_api_exposes_no_user_or_administrator_creation_route() -> None:
         "/api/v1/query/ask",
         "/api/v1/auth/login",
         "/api/v1/auth/me",
+        "/api/v1/admin/users",
+        "/api/v1/admin/users/{user_id}",
+        "/api/v1/admin/users/{user_id}/role",
+        "/api/v1/admin/users/{user_id}/password",
+        "/api/v1/admin/users/{user_id}/deactivate",
+        "/api/v1/admin/users/{user_id}/reactivate",
+        "/api/v1/admin/users/{user_id}/unlock",
+        "/api/v1/admin/users/{user_id}/revoke-sessions",
+        "/api/v1/admin/audit-events",  # read-only listing
     }
-    assert not any(word in path for path in paths for word in ("user", "admin", "register", "signup"))
+    assert {method for method in paths["/api/v1/admin/audit-events"]} == {"get"}
+    assert not any(word in path for path in paths for word in ("register", "signup", "promote"))
+    assert not any(
+        path.startswith("/api/v1/admin/") and "admin/users" not in path and path != "/api/v1/admin/audit-events"
+        for path in paths
+    )
 
 
 # --------------------------------------------------------------------------- #

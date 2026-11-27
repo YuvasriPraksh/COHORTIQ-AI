@@ -18,6 +18,7 @@ import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
+from app import config as app_config
 from app.database import init_database
 from backend.app.api import deps
 from backend.app.api.deps import (
@@ -25,12 +26,14 @@ from backend.app.api.deps import (
     FORBIDDEN_DETAIL,
     NOT_AUTHENTICATED_DETAIL,
     AuthenticatedUser,
+    get_auth_db_path,
     get_auth_settings,
     get_current_user,
     get_user_store,
     require_role,
 )
 from backend.app.api.v1 import regulations as regulation_routes
+from backend.app.audit.repository import init_audit_tables
 from backend.app.core.config import DEFAULT_JWT_AUDIENCE, DEFAULT_JWT_ISSUER, Settings
 from backend.app.core.security import create_access_token
 from backend.app.main import app as main_app
@@ -90,13 +93,31 @@ def _build_app() -> FastAPI:
     return app
 
 
+@pytest.fixture(autouse=True)
+def _real_database_untouched() -> Iterator[None]:
+    real_db = Path(app_config.get_settings().database_path).resolve()
+    before = (real_db.stat().st_size, real_db.stat().st_mtime_ns) if real_db.exists() else None
+    yield
+    after = (real_db.stat().st_size, real_db.stat().st_mtime_ns) if real_db.exists() else None
+    assert after == before, "The real project database was modified."
+
+
 @pytest.fixture
-def env() -> Iterator[Env]:
+def audit_db(tmp_path: Path) -> Path:
+    """Temporary database for the authorization refusals require_role records."""
+    path = tmp_path / "audit.db"
+    init_audit_tables(path)
+    return path
+
+
+@pytest.fixture
+def env(audit_db: Path) -> Iterator[Env]:
     settings = Settings(app_env="test", jwt_secret_key=secrets.token_urlsafe(48))
     store = InMemoryUserStore(STUDENT, ADMIN, INACTIVE, ROTATED, UNKNOWN_ROLE)
     app = _build_app()
     app.dependency_overrides[get_auth_settings] = lambda: settings
     app.dependency_overrides[get_user_store] = lambda: store
+    app.dependency_overrides[get_auth_db_path] = lambda: str(audit_db)
     yield Env(TestClient(app), settings, store)
 
 

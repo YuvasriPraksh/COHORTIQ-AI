@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from app import workflow
 from app.database import init_database, insert_document_pages, insert_regulation
 from app.models import GroundedAnswer, GroundedCitation
+from backend.app.api.v1 import regulations as regulation_routes
 from backend.app.api.v1.query import get_db_path
 from backend.app.main import app
 from backend.tests.auth_support import sign_in_module_clients_as_administrator
@@ -384,7 +385,11 @@ def test_existing_api_endpoints_remain_functional(tmp_path: Path) -> None:
     """Adding the query endpoint must not break existing API endpoints."""
     db_path = _create_test_db(tmp_path)
 
+    # Each router has its own database dependency; override both so the
+    # regulations listing also uses the temporary database, never the
+    # configured one (which is resolved relative to the working directory).
     app.dependency_overrides[get_db_path] = lambda: str(db_path)
+    app.dependency_overrides[regulation_routes.get_db_path] = lambda: str(db_path)
     try:
         client = TestClient(app)
         health_response = client.get("/api/v1/health")

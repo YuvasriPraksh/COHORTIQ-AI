@@ -11,7 +11,8 @@ Stage 1 (this module) provides the request-level building blocks:
 ``require_role(*roles)``
     Builds a dependency that additionally requires one of the given roles,
     returning HTTP 403 otherwise. The role always comes from the user store,
-    never from the token or the request.
+    never from the token or the request. Refusals are recorded in the audit
+    log as ``authorization.denied`` (see :class:`DenialRecorder`).
 
 The user store is reached through ``get_user_store``, which is backed by the
 ``users`` table (:mod:`backend.app.auth.repository`) in the configured SQLite
@@ -28,9 +29,11 @@ from __future__ import annotations
 import logging
 from typing import Callable, Optional, Protocol
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from backend.app.api.permissions import route_template_for
+from backend.app.audit.repository import append_audit_event
 from backend.app.auth.models import ROLE_ADMINISTRATOR, ROLE_STUDENT, ROLES, AuthenticatedUser
 from backend.app.auth.repository import SQLiteUserStore
 from backend.app.core.config import Settings, get_settings
@@ -46,10 +49,12 @@ __all__ = [
     "ROLE_ADMINISTRATOR",
     "ROLE_STUDENT",
     "AuthenticatedUser",
+    "DenialRecorder",
     "UserStore",
     "get_auth_db_path",
     "get_auth_settings",
     "get_current_user",
+    "get_denial_recorder",
     "get_user_store",
     "require_administrator",
     "require_role",
@@ -139,6 +144,43 @@ def get_current_user(
     return user
 
 
+class DenialRecorder:
+    """Records an authorization refusal (HTTP 403) in the audit log.
+
+    The refusal is never weakened by auditing: if the event cannot be written,
+    the failure is logged at ERROR level and the caller still refuses the
+    request. Anonymous 401s are never recorded. The event stores the route
+    template (not the concrete URL), the HTTP method and a reason code only.
+    """
+
+    def __init__(self, request: Request, db_path: Optional[str]) -> None:
+        self._method = request.method
+        self._path = route_template_for(request.method, request.url.path)
+        self._db_path = db_path
+
+    def __call__(self, user: AuthenticatedUser, reason: str) -> None:
+        details: dict[str, str] = {"method": self._method, "reason": reason}
+        if self._path is not None:
+            details["path"] = self._path
+        try:
+            append_audit_event(
+                "authorization.denied",
+                outcome="denied",
+                actor_type="user",
+                actor_user_id=int(user.id),
+                actor_role=user.role,
+                details=details,
+                db_path=self._db_path,
+            )
+        except Exception:
+            logger.exception("Could not record an authorization refusal in the audit log.")
+
+
+def get_denial_recorder(request: Request, db_path: Optional[str] = Depends(get_auth_db_path)) -> DenialRecorder:
+    """Per-request recorder for authorization refusals (uses the users/audit database)."""
+    return DenialRecorder(request, db_path)
+
+
 def require_role(*allowed_roles: str) -> Callable[..., AuthenticatedUser]:
     """Return a dependency that requires the authenticated user to hold one of ``allowed_roles``.
 
@@ -152,8 +194,12 @@ def require_role(*allowed_roles: str) -> Callable[..., AuthenticatedUser]:
         raise ValueError(f"Unknown role(s): {', '.join(unknown)}.")
     allowed = frozenset(allowed_roles)
 
-    def dependency(user: AuthenticatedUser = Depends(get_current_user)) -> AuthenticatedUser:
+    def dependency(
+        user: AuthenticatedUser = Depends(get_current_user),
+        record_denial: DenialRecorder = Depends(get_denial_recorder),
+    ) -> AuthenticatedUser:
         if user.role not in allowed:
+            record_denial(user, "insufficient_role")
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=FORBIDDEN_DETAIL)
         return user
 

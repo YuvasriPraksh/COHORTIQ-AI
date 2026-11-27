@@ -33,7 +33,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from app.database import get_connection
-from backend.app.auth.models import ROLES, AuthenticatedUser
+from backend.app.audit.repository import append_audit_event
+from backend.app.auth.models import ROLE_ADMINISTRATOR, ROLES, AuthenticatedUser
 from backend.app.auth.password_policy import validate_password_strength
 from backend.app.core.security import hash_password
 
@@ -217,6 +218,13 @@ def _is_duplicate_email(error: sqlite3.IntegrityError) -> bool:
     return "UNIQUE constraint failed: users.email" in str(error)
 
 
+def _integrity_error(error: sqlite3.IntegrityError) -> ValueError:
+    """Map a users-table constraint failure to a safe, generic error."""
+    if _is_duplicate_email(error):
+        return DuplicateEmailError()
+    return ValueError("User data violates database constraints.")
+
+
 # --------------------------------------------------------------------------- #
 # Schema
 # --------------------------------------------------------------------------- #
@@ -252,11 +260,98 @@ def create_user(
         WeakPasswordError: the password does not meet the policy.
         DuplicateEmailError: the email is already registered (any letter case).
     """
+    values = _new_user_values(
+        email,
+        password,
+        role,
+        full_name=full_name,
+        admission_batch=admission_batch,
+        programme=programme,
+        is_active=is_active,
+    )
+    with closing(get_connection(db_path)) as connection:
+        try:
+            user_id = _insert_user(connection, values)
+            connection.commit()
+        except sqlite3.IntegrityError as error:
+            connection.rollback()
+            raise _integrity_error(error) from None
+
+    created = get_user_by_id(user_id, db_path=db_path)
+    assert created is not None
+    return created
+
+
+def create_bootstrap_administrator(
+    email: str,
+    password: str,
+    *,
+    full_name: Optional[str] = None,
+    db_path: str | Path | None = None,
+) -> UserRecord:
+    """Create an administrator for the command-line bootstrap script, audited atomically.
+
+    The account and its ``user.created`` audit event (actor ``cli``, detail
+    ``role``) are written in one transaction: both are stored or neither is.
+    Only ``backend.scripts.create_admin`` should call this; the API cannot
+    create administrators. Requires the ``audit_events`` table.
+
+    Raises:
+        ValueError, WeakPasswordError, DuplicateEmailError: as :func:`create_user`.
+    """
+    values = _new_user_values(
+        email,
+        password,
+        ROLE_ADMINISTRATOR,
+        full_name=full_name,
+        admission_batch=None,
+        programme=None,
+        is_active=True,
+    )
+    with closing(get_connection(db_path)) as connection:
+        connection.isolation_level = None  # explicit transaction control
+        connection.execute("BEGIN IMMEDIATE;")
+        try:
+            try:
+                user_id = _insert_user(connection, values)
+            except sqlite3.IntegrityError as error:
+                raise _integrity_error(error) from None
+            created = _row_to_record(
+                connection.execute(f"SELECT {_SELECT_COLUMNS} FROM users WHERE id = ?;", (user_id,)).fetchone()
+            )
+            append_audit_event(
+                "user.created",
+                outcome="success",
+                actor_type="cli",
+                target_type="user",
+                target_id=user_id,
+                details={"role": ROLE_ADMINISTRATOR},
+                connection=connection,
+            )
+            connection.execute("COMMIT;")
+        except BaseException:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK;")
+            raise
+    return created
+
+
+def _new_user_values(
+    email: Any,
+    password: Any,
+    role: Any,
+    *,
+    full_name: Any,
+    admission_batch: Any,
+    programme: Any,
+    is_active: Any,
+) -> tuple[Any, ...]:
+    """Validate a new account and hash its password (Argon2id); no database access."""
     normalized_email = normalize_email(email)
     _validate_role(role)
     if not isinstance(is_active, bool):
         raise ValueError("is_active must be a boolean.")
-    values = (
+    return (
         normalized_email,
         _validated_password_hash(password, normalized_email),
         role,
@@ -265,30 +360,25 @@ def create_user(
         _optional_text(programme, "programme", MAX_COHORT_VALUE_LENGTH),
         int(is_active),
     )
+
+
+def _insert_user(connection: sqlite3.Connection, values: tuple[Any, ...]) -> int:
+    """Insert validated values from :func:`_new_user_values`; the caller owns the transaction.
+
+    Raises ``sqlite3.IntegrityError`` unchanged so the caller can roll back
+    first; map it with :func:`_integrity_error`.
+    """
     now = _now_iso()
-
-    with closing(get_connection(db_path)) as connection:
-        try:
-            cursor = connection.execute(
-                """
-                INSERT INTO users (
-                    email, password_hash, role, full_name, admission_batch, programme,
-                    is_active, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
-                """,
-                (*values, now, now),
-            )
-            connection.commit()
-        except sqlite3.IntegrityError as error:
-            connection.rollback()
-            if _is_duplicate_email(error):
-                raise DuplicateEmailError() from None
-            raise ValueError("User data violates database constraints.") from None
-        user_id = int(cursor.lastrowid)
-
-    created = get_user_by_id(user_id, db_path=db_path)
-    assert created is not None
-    return created
+    cursor = connection.execute(
+        """
+        INSERT INTO users (
+            email, password_hash, role, full_name, admission_batch, programme,
+            is_active, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """,
+        (*values, now, now),
+    )
+    return int(cursor.lastrowid)
 
 
 def get_user_by_id(user_id: Any, *, db_path: str | Path | None = None) -> Optional[UserRecord]:
@@ -340,6 +430,56 @@ def update_user(
     if existing is None:
         return None
 
+    statement = _user_update_statement(
+        existing,
+        email=email,
+        password=password,
+        role=role,
+        full_name=full_name,
+        admission_batch=admission_batch,
+        programme=programme,
+        is_active=is_active,
+        failed_login_count=failed_login_count,
+        locked_until=locked_until,
+        last_login_at=last_login_at,
+        increment_token_version=increment_token_version,
+    )
+    if statement is None:
+        return existing
+
+    with closing(get_connection(db_path)) as connection:
+        try:
+            connection.execute(*statement)
+            connection.commit()
+        except sqlite3.IntegrityError as error:
+            connection.rollback()
+            raise _integrity_error(error) from None
+
+    return get_user_by_id(existing.id, db_path=db_path)
+
+
+def _user_update_statement(
+    existing: UserRecord,
+    *,
+    email: Any = _UNSET,
+    password: Any = _UNSET,
+    role: Any = _UNSET,
+    full_name: Any = _UNSET,
+    admission_batch: Any = _UNSET,
+    programme: Any = _UNSET,
+    is_active: Any = _UNSET,
+    failed_login_count: Any = _UNSET,
+    locked_until: Any = _UNSET,
+    last_login_at: Any = _UNSET,
+    increment_token_version: bool = False,
+) -> Optional[tuple[str, list[Any]]]:
+    """Validate changes to ``existing`` and build the UPDATE statement; no database access.
+
+    Holds the single implementation of the update rules: password policy and
+    Argon2id hashing, and incrementing ``token_version`` when the email,
+    password or role changes or the account is deactivated. Returns ``None``
+    when nothing would change.
+    """
     assignments: dict[str, Any] = {}
     revoke_tokens = bool(increment_token_version)
 
@@ -378,7 +518,7 @@ def update_user(
         assignments["last_login_at"] = _optional_timestamp(last_login_at, "last_login_at")
 
     if not assignments and not revoke_tokens:
-        return existing
+        return None
 
     set_clauses = [f"{column} = ?" for column in assignments]
     parameters = list(assignments.values())
@@ -386,18 +526,7 @@ def update_user(
         set_clauses.append("token_version = token_version + 1")
     set_clauses.append("updated_at = ?")
     parameters.extend([_now_iso(), existing.id])
-
-    with closing(get_connection(db_path)) as connection:
-        try:
-            connection.execute(f"UPDATE users SET {', '.join(set_clauses)} WHERE id = ?;", parameters)
-            connection.commit()
-        except sqlite3.IntegrityError as error:
-            connection.rollback()
-            if _is_duplicate_email(error):
-                raise DuplicateEmailError() from None
-            raise ValueError("User data violates database constraints.") from None
-
-    return get_user_by_id(existing.id, db_path=db_path)
+    return f"UPDATE users SET {', '.join(set_clauses)} WHERE id = ?;", parameters
 
 
 def increment_token_version(user_id: Any, *, db_path: str | Path | None = None) -> Optional[int]:
@@ -467,6 +596,20 @@ def is_locked(user: UserRecord, now: Optional[datetime] = None) -> bool:
     return locked_until is not None and locked_until > _utc_moment(now)
 
 
+def _audit_login_failure(connection: sqlite3.Connection, user: UserRecord, reason: str, moment: datetime) -> None:
+    """Record a refused sign-in for a known account, in the caller's transaction."""
+    append_audit_event(
+        "auth.login_failed",
+        outcome="failure",
+        actor_type="anonymous",
+        target_type="user",
+        target_id=user.id,
+        details={"reason": reason, "failed_login_count": user.failed_login_count},
+        occurred_at=moment,
+        connection=connection,
+    )
+
+
 def apply_login_attempt(
     user_id: Any,
     *,
@@ -494,6 +637,13 @@ def apply_login_attempt(
     - Correct password: the failure count and lock are cleared and
       ``last_login_at`` is set.
 
+    Audit events are written in the same transaction (the ``audit_events``
+    table must exist): ``auth.login_succeeded``; ``auth.login_failed`` with
+    reason ``invalid_password``, ``account_locked`` or ``account_inactive``;
+    and ``auth.account_locked`` when a lock is applied. If an event cannot be
+    written, the whole attempt rolls back (counters included) and the error
+    propagates, so sign-in fails closed rather than going unrecorded.
+
     Returns the updated record when sign-in is permitted, otherwise ``None``.
     """
     if isinstance(max_failed_attempts, bool) or not isinstance(max_failed_attempts, int) or max_failed_attempts < 1:
@@ -515,7 +665,14 @@ def apply_login_attempt(
             signed_in: Optional[UserRecord] = None
             if row is not None:
                 user = _row_to_record(row)
-                if not user.is_active or is_locked(user, moment) or user.password_hash != verified_password_hash:
+                if not user.is_active:
+                    _audit_login_failure(connection, user, "account_inactive", moment)
+                elif is_locked(user, moment):
+                    _audit_login_failure(connection, user, "account_locked", moment)
+                elif user.password_hash != verified_password_hash:
+                    # The password changed during this sign-in. Refused with no
+                    # state change; the audit vocabulary has no reason for this
+                    # race, so it is deliberately not recorded.
                     pass
                 elif password_matches:
                     connection.execute(
@@ -526,6 +683,17 @@ def apply_login_attempt(
                     # Read inside the transaction so the token version used for
                     # the new token is exactly the one this sign-in validated.
                     signed_in = _row_to_record(connection.execute(select_sql, (parsed_id,)).fetchone())
+                    append_audit_event(
+                        "auth.login_succeeded",
+                        outcome="success",
+                        actor_type="user",
+                        actor_user_id=signed_in.id,
+                        actor_role=signed_in.role,
+                        target_type="user",
+                        target_id=signed_in.id,
+                        occurred_at=moment,
+                        connection=connection,
+                    )
                 else:
                     # A lock that has expired starts a fresh counting window.
                     previous = 0 if user.locked_until is not None else user.failed_login_count
@@ -542,6 +710,27 @@ def apply_login_attempt(
                         "UPDATE users SET failed_login_count = ?, locked_until = ?, updated_at = ? WHERE id = ?;",
                         (failures, locked_until, timestamp, parsed_id),
                     )
+                    append_audit_event(
+                        "auth.login_failed",
+                        outcome="failure",
+                        actor_type="anonymous",
+                        target_type="user",
+                        target_id=parsed_id,
+                        details={"reason": "invalid_password", "failed_login_count": failures},
+                        occurred_at=moment,
+                        connection=connection,
+                    )
+                    if locked_until is not None:
+                        append_audit_event(
+                            "auth.account_locked",
+                            outcome="success",
+                            actor_type="system",
+                            target_type="user",
+                            target_id=parsed_id,
+                            details={"failed_login_count": failures, "locked_until": locked_until},
+                            occurred_at=moment,
+                            connection=connection,
+                        )
             connection.execute("COMMIT;")
         except BaseException:
             if connection.in_transaction:

@@ -24,7 +24,14 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import StringConstraints
 
 from app.database import get_applicable_regulations
-from backend.app.api.deps import AuthenticatedUser, get_current_user, require_administrator
+from backend.app.api.deps import (
+    AuthenticatedUser,
+    DenialRecorder,
+    get_auth_db_path,
+    get_current_user,
+    get_denial_recorder,
+    require_administrator,
+)
 from backend.app.api.permissions import (
     ADMINISTRATOR_ONLY_RESPONSES,
     COHORT_SCOPED_RESPONSES,
@@ -32,6 +39,7 @@ from backend.app.api.permissions import (
     ensure_cohort_access,
     is_administrator,
 )
+from backend.app.audit.repository import _STATUS_VALUE, append_audit_event
 from backend.app.core.config import MIB, Settings, format_byte_size, get_settings
 from backend.app.schemas.regulations import (
     DocumentPageListResponse,
@@ -139,6 +147,122 @@ def _ingestion_failure_detail(kind: IngestionFailureKind, result: Mapping[str, A
     return INGESTION_INTERNAL_ERROR_DETAIL
 
 
+# --- Audit -------------------------------------------------------------------
+#
+# Ingestion and verification run inside ``app.workflow``, which manages its own
+# database connections, so their audit events cannot share the transaction of
+# the change. Instead the event is written immediately after the change and,
+# if that write fails, the change is undone by a compensating action and the
+# request fails with the existing generic 500. This is best-effort, not atomic:
+# a crash between the change and the audit write, or a failed compensation
+# (logged at CRITICAL), can leave an unaudited change.
+
+
+def _actor_fields(administrator: AuthenticatedUser) -> dict[str, Any]:
+    return {"actor_type": "user", "actor_user_id": int(administrator.id), "actor_role": administrator.role}
+
+
+def _positive_id(value: Any) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _record_ingestion_failure(
+    administrator: AuthenticatedUser,
+    failure: IngestionFailureKind,
+    result: Mapping[str, Any],
+    audit_db_path: Optional[str],
+) -> None:
+    """Record a failed ingestion. Nothing was stored, so there is nothing to undo;
+    if the event cannot be written the failure is logged and the original error
+    response is still returned."""
+    regulation_id = _positive_id(result.get("regulation_id"))
+    try:
+        append_audit_event(
+            "regulation.ingested",
+            outcome="failure",
+            target_type="regulation" if regulation_id else None,
+            target_id=regulation_id,
+            details={"reason": failure.value},
+            db_path=audit_db_path,
+            **_actor_fields(administrator),
+        )
+    except Exception:
+        logger.exception("Could not record a failed regulation ingestion in the audit log.")
+
+
+def _record_ingestion_success_or_undo(
+    administrator: AuthenticatedUser,
+    regulation_id: Any,
+    db_path: Optional[str],
+    audit_db_path: Optional[str],
+) -> None:
+    """Record a successful ingestion; if that fails, remove the new (pending) regulation and raise 500."""
+    try:
+        append_audit_event(
+            "regulation.ingested",
+            outcome="success",
+            target_type="regulation",
+            target_id=regulation_id,
+            db_path=audit_db_path,
+            **_actor_fields(administrator),
+        )
+    except Exception:
+        logger.exception("Audit write failed after ingesting regulation %s; removing it.", regulation_id)
+        if not regulation_service.remove_unaudited_regulation(regulation_id, db_path=db_path):
+            logger.critical("Regulation %s was ingested but is neither audited nor removed.", regulation_id)
+        raise HTTPException(status_code=500, detail=INGESTION_INTERNAL_ERROR_DETAIL) from None
+
+
+_UNKNOWN_STATUS: Any = object()
+
+
+def _read_status_for_audit(regulation_id: int, db_path: Optional[str]) -> Any:
+    """The status before a verification change, or ``_UNKNOWN_STATUS`` if it cannot be read.
+
+    A read failure is not reported here: the workflow that follows hits the
+    same storage and reports it through the existing error handling.
+    """
+    try:
+        regulation = regulation_service.get_regulation_details(regulation_id=regulation_id, db_path=db_path)
+    except Exception:
+        return _UNKNOWN_STATUS
+    return regulation.get("verification_status") if regulation else _UNKNOWN_STATUS
+
+
+def _audit_status(value: Any) -> Optional[str]:
+    """A stored status in the audit log's approved format, or None for unusual legacy values."""
+    return value if isinstance(value, str) and _STATUS_VALUE.match(value) else None
+
+
+def _record_verification_or_undo(
+    administrator: AuthenticatedUser,
+    regulation_id: int,
+    previous_status: Any,
+    new_status: str,
+    db_path: Optional[str],
+    audit_db_path: Optional[str],
+) -> None:
+    """Record a verification change; if that fails, restore the previous status and raise 500."""
+    try:
+        append_audit_event(
+            "regulation.verification_changed",
+            outcome="success",
+            target_type="regulation",
+            target_id=regulation_id,
+            details={"old_status": _audit_status(previous_status), "new_status": new_status},
+            db_path=audit_db_path,
+            **_actor_fields(administrator),
+        )
+    except Exception:
+        logger.exception("Audit write failed after updating regulation %s; restoring its status.", regulation_id)
+        restored = previous_status is not _UNKNOWN_STATUS and regulation_service.restore_verification_status(
+            regulation_id, expected=new_status, previous=previous_status, db_path=db_path
+        )
+        if not restored:
+            logger.critical("Regulation %s status changed but is neither audited nor restored.", regulation_id)
+        raise HTTPException(status_code=500, detail=VERIFICATION_INTERNAL_ERROR_DETAIL) from None
+
+
 def get_db_path() -> Optional[str]:
     """Dependency providing an optional database path override.
 
@@ -228,6 +352,7 @@ def list_applicable_regulations_for_cohort(
     programme: str,
     db_path: Optional[str] = Depends(get_db_path),
     user: AuthenticatedUser = Depends(get_current_user),
+    record_denial: DenialRecorder = Depends(get_denial_recorder),
 ) -> RegulationListResponse:
     """Return approved regulations applicable to the specified cohort.
 
@@ -236,7 +361,9 @@ def list_applicable_regulations_for_cohort(
     regulations). Students may only request the cohort stored on their account
     (403 otherwise); administrators may request any cohort.
     """
-    admission_batch, programme = ensure_cohort_access(user, admission_batch, programme)
+    admission_batch, programme = ensure_cohort_access(
+        user, admission_batch, programme, record_denial=record_denial
+    )
     regulations = get_applicable_regulations(
         admission_batch=admission_batch,
         programme=programme,
@@ -286,6 +413,8 @@ async def ingest_regulation(
     processing_status: Optional[str] = Form(None),
     db_path: Optional[str] = Depends(get_db_path),
     limits: Settings = Depends(get_api_settings),
+    administrator: AuthenticatedUser = Depends(require_administrator),
+    audit_db_path: Optional[str] = Depends(get_auth_db_path),
 ) -> RegulationIngestionResult:
     """Ingest a regulation PDF and metadata via the existing workflow service (administrators only).
 
@@ -370,11 +499,13 @@ async def ingest_regulation(
                 result.get("regulation_id"),
                 result.get("message"),
             )
+            _record_ingestion_failure(administrator, failure, result, audit_db_path)
             raise HTTPException(
                 status_code=status_code,
                 detail=_ingestion_failure_detail(failure, result),
             )
 
+        _record_ingestion_success_or_undo(administrator, result.get("regulation_id"), db_path, audit_db_path)
         return RegulationIngestionResult(**result)
     except HTTPException:
         raise
@@ -405,6 +536,8 @@ def update_regulation_verification(
     regulation_id: int,
     request: VerificationUpdateRequest,
     db_path: Optional[str] = Depends(get_db_path),
+    administrator: AuthenticatedUser = Depends(require_administrator),
+    audit_db_path: Optional[str] = Depends(get_auth_db_path),
 ) -> VerificationUpdateResponse:
     """Explicitly update a regulation's verification status (administrators only).
 
@@ -428,6 +561,7 @@ def update_regulation_verification(
     # outcome ("error") can only come from a server-side fault. Outcomes are
     # classified by the structured ``status`` field, never by message text.
     try:
+        previous_status = _read_status_for_audit(regulation_id, db_path)
         result = regulation_service.approve_or_verify_regulation(
             regulation_id=regulation_id,
             db_path=db_path,
@@ -435,6 +569,9 @@ def update_regulation_verification(
         )
         outcome = result.get("status")
         if outcome == "updated":
+            _record_verification_or_undo(
+                administrator, regulation_id, previous_status, verification_status, db_path, audit_db_path
+            )
             return VerificationUpdateResponse(**result)
         if outcome == "not_found":
             raise HTTPException(status_code=404, detail=REGULATION_NOT_FOUND_DETAIL)

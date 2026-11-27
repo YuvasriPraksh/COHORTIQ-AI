@@ -18,6 +18,7 @@ from app.config import ensure_app_directories
 from app.config import get_settings as get_storage_settings
 from app.database import init_database
 from backend.app.api.v1 import api_router
+from backend.app.audit.repository import init_audit_tables
 from backend.app.auth.repository import init_auth_tables
 from backend.app.core.config import format_byte_size, get_settings
 from backend.app.core.limits import BodyLimit, RequestSizeLimitMiddleware
@@ -33,11 +34,13 @@ def initialize_storage() -> Path:
     Uses the same shared configuration and helpers as the Streamlit app, so both
     entry points operate on the same configured database. Table creation is
     idempotent (``CREATE TABLE IF NOT EXISTS``), so existing records are kept.
-    The backend-only ``users`` table is created alongside the regulation tables.
+    The backend-only ``users`` and append-only ``audit_events`` tables are
+    created alongside the regulation tables.
     """
     storage_settings = ensure_app_directories(get_storage_settings())
     init_database(storage_settings.database_path)
     init_auth_tables(storage_settings.database_path)
+    init_audit_tables(storage_settings.database_path)
     return Path(storage_settings.database_path)
 
 

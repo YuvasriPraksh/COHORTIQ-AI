@@ -16,6 +16,8 @@ Security behaviour
 - Passwords and password hashes are never printed or logged.
 - This is the only way to create an administrator; the API has no public
   endpoint for it.
+- The new account and a ``user.created`` audit event (actor ``cli``, role
+  only; no email, name or password) are stored in one transaction.
 """
 
 from __future__ import annotations
@@ -23,18 +25,19 @@ from __future__ import annotations
 import argparse
 import getpass
 import hmac
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Callable, Optional, TextIO
 
 from app.config import ensure_app_directories, get_settings
 from app.database import init_database
-from backend.app.auth.models import ROLE_ADMINISTRATOR
+from backend.app.audit.repository import AuditEventError, init_audit_tables
 from backend.app.auth.password_policy import validate_password_strength
 from backend.app.auth.repository import (
     DuplicateEmailError,
     WeakPasswordError,
-    create_user,
+    create_bootstrap_administrator,
     get_user_by_email,
     init_auth_tables,
     normalize_email,
@@ -66,13 +69,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _initialize_database(db_path: Optional[str]) -> Path:
-    """Create the regulation tables and the users table if needed (same as API startup)."""
+    """Create the regulation, users and audit tables if needed (same as API startup)."""
     if db_path:
         path = Path(db_path)
     else:
         path = Path(ensure_app_directories(get_settings()).database_path)
     init_database(path)
     init_auth_tables(path)
+    init_audit_tables(path)
     return path
 
 
@@ -136,7 +140,8 @@ def main(
         if password is None:
             return EXIT_FAILED
 
-        user = create_user(email, password, ROLE_ADMINISTRATOR, full_name=args.full_name, db_path=db_path)
+        # The account and its audit event are written in one transaction.
+        user = create_bootstrap_administrator(email, password, full_name=args.full_name, db_path=db_path)
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled. No account was created.", file=err)
         return EXIT_FAILED
@@ -145,6 +150,11 @@ def main(
         return EXIT_FAILED
     except WeakPasswordError:
         print("Error: the password does not meet the password policy. No account was created.", file=err)
+        return EXIT_FAILED
+    except (sqlite3.Error, AuditEventError):
+        # The account and its audit event are written in one transaction, so
+        # nothing was stored. Details are not printed (they may include paths).
+        print("Error: the account could not be stored. No account was created.", file=err)
         return EXIT_FAILED
     except ValueError as error:
         print(f"Error: {error} No account was created.", file=err)

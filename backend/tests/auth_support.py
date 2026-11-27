@@ -28,6 +28,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.app.api.deps import get_auth_db_path, get_auth_settings
+from backend.app.audit.repository import init_audit_tables
 from backend.app.auth.models import ROLE_ADMINISTRATOR
 from backend.app.auth.repository import UserRecord, create_user, init_auth_tables
 from backend.app.core.config import Settings
@@ -60,6 +61,7 @@ def create_signed_in_account(
     role: str,
     *,
     email: Optional[str] = None,
+    full_name: Optional[str] = None,
     admission_batch: Optional[str] = None,
     programme: Optional[str] = None,
     is_active: bool = True,
@@ -70,10 +72,17 @@ def create_signed_in_account(
     account is still active and the account is then deactivated directly.
     """
     init_auth_tables(db_path)
+    init_audit_tables(db_path)  # sign-in writes audit events
     password = random_password()
     address = email or f"{role}-{secrets.token_hex(6)}@uni.edu"
     user = create_user(
-        address, password, role, admission_batch=admission_batch, programme=programme, db_path=db_path
+        address,
+        password,
+        role,
+        full_name=full_name,
+        admission_batch=admission_batch,
+        programme=programme,
+        db_path=db_path,
     )
     issued = auth_service.login(address, password, settings=settings, db_path=db_path)
     if not is_active:

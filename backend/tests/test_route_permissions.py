@@ -31,6 +31,7 @@ from backend.app.api import deps
 from backend.app.api.permissions import ROUTE_PERMISSIONS, Access
 from backend.app.api.v1 import query as query_routes
 from backend.app.api.v1 import regulations as regulation_routes
+from backend.app.audit.repository import init_audit_tables
 from backend.app.auth.models import ROLE_ADMINISTRATOR, ROLE_STUDENT
 from backend.app.main import app
 from backend.tests.auth_support import create_signed_in_account, make_auth_settings, use_auth_database
@@ -115,6 +116,17 @@ def test_inventory_lists_the_expected_classifications() -> None:
     assert {key for key, access in ROUTE_PERMISSIONS.items() if access is Access.ADMINISTRATOR} == {
         ("POST", f"{api}/regulations/ingest"),
         ("PATCH", f"{api}/regulations/{{regulation_id}}/verification"),
+        ("GET", f"{api}/admin/users"),
+        ("POST", f"{api}/admin/users"),
+        ("GET", f"{api}/admin/users/{{user_id}}"),
+        ("PATCH", f"{api}/admin/users/{{user_id}}"),
+        ("PATCH", f"{api}/admin/users/{{user_id}}/role"),
+        ("POST", f"{api}/admin/users/{{user_id}}/password"),
+        ("POST", f"{api}/admin/users/{{user_id}}/deactivate"),
+        ("POST", f"{api}/admin/users/{{user_id}}/reactivate"),
+        ("POST", f"{api}/admin/users/{{user_id}}/unlock"),
+        ("POST", f"{api}/admin/users/{{user_id}}/revoke-sessions"),
+        ("GET", f"{api}/admin/audit-events"),
     }
     assert {key for key, access in ROUTE_PERMISSIONS.items() if access is Access.PUBLIC} == {
         ("GET", "/"),
@@ -197,7 +209,12 @@ def test_openapi_security_matches_inventory() -> None:
 
 
 def _concrete(path: str) -> str:
-    return path.replace("{regulation_id}", "1").replace("{admission_batch}", "2024").replace("{programme}", "BSc CS")
+    return (
+        path.replace("{regulation_id}", "1")
+        .replace("{user_id}", "1")
+        .replace("{admission_batch}", "2024")
+        .replace("{programme}", "BSc CS")
+    )
 
 
 def _request(client: TestClient, method: str, path: str, headers: dict[str, str] | None = None) -> Any:
@@ -211,6 +228,7 @@ def _request(client: TestClient, method: str, path: str, headers: dict[str, str]
 def probe_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestClient, Any, Any]]:
     db_path = tmp_path / "probe.db"
     init_database(db_path)
+    init_audit_tables(db_path)
     settings = make_auth_settings()
     use_auth_database(app, monkeypatch, db_path, settings)
     monkeypatch.setitem(app.dependency_overrides, regulation_routes.get_db_path, lambda: str(db_path))
@@ -245,7 +263,8 @@ def test_students_are_refused_administrator_routes(probe_client: tuple[TestClien
 
     assert student_response.status_code == 403
     assert student_response.json() == {"detail": deps.FORBIDDEN_DETAIL}
-    assert admin_response.status_code not in (401, 403)  # reaches validation instead
+    assert admin_response.status_code not in (401, 403)  # authorized: reaches validation or succeeds
+    assert admin_response.status_code < 500
 
 
 @pytest.mark.parametrize(

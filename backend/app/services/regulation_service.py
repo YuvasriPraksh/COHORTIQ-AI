@@ -7,6 +7,7 @@ duplicating business logic.
 
 from __future__ import annotations
 
+from contextlib import closing
 from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
@@ -133,6 +134,46 @@ def is_approved(regulation: Mapping[str, Any]) -> bool:
     the API is exactly what retrieval treats as approved evidence.
     """
     return database._is_approved_verification_status(regulation.get("verification_status"))
+
+
+def remove_unaudited_regulation(regulation_id: Any, db_path: str | Path | None = None) -> bool:
+    """Undo an ingestion whose audit event could not be written.
+
+    Deletes the regulation and its pages through the existing database layer.
+    Newly ingested regulations are always pending, so students never saw it.
+    Returns False if nothing was removed or the removal failed (never raises).
+    """
+    if isinstance(regulation_id, bool) or not isinstance(regulation_id, int) or regulation_id <= 0:
+        return False
+    try:
+        return database.delete_regulation(regulation_id=regulation_id, db_path=db_path)
+    except Exception:
+        return False
+
+
+def restore_verification_status(
+    regulation_id: int,
+    *,
+    expected: str,
+    previous: Any,
+    db_path: str | Path | None = None,
+) -> bool:
+    """Undo a verification change whose audit event could not be written.
+
+    Restores ``previous`` only if the status is still ``expected`` (the value
+    just set), so a concurrent change by another administrator is never
+    overwritten. Returns True if the previous status was restored (never raises).
+    """
+    try:
+        with closing(database.get_connection(db_path)) as connection:
+            cursor = connection.execute(
+                "UPDATE regulations SET verification_status = ? WHERE id = ? AND verification_status IS ?;",
+                (previous, regulation_id, expected),
+            )
+            connection.commit()
+            return cursor.rowcount == 1
+    except Exception:
+        return False
 
 
 def list_regulations(

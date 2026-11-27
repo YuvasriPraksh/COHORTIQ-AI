@@ -88,18 +88,20 @@ default `data/cohortiq.db`). Tables are created automatically, and existing data
 is never modified:
 
 - Starting the API creates the regulation tables (`regulations`,
-  `document_pages`) and the backend-only `users` table if they do not exist.
+  `document_pages`), the backend-only `users` table and the append-only
+  `audit_events` table if they do not exist.
 - The first-administrator script below does the same before creating an account.
 
-Run commands from the project root so the relative `DATABASE_PATH` resolves
-correctly:
+Run commands (including `pytest`) from the project root so the relative
+`DATABASE_PATH` resolves correctly. From another directory, the relative path
+points to a different, empty database file:
 
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload
 ```
 
-The `users` table is used only by the API. The Streamlit app does not use it and
-is unaffected.
+The `users` and `audit_events` tables are used only by the API. The Streamlit
+app does not use them and is unaffected.
 
 ### Authentication settings
 
@@ -133,6 +135,9 @@ interactive terminal:
   nothing is created or changed.
 - Passwords are stored only as Argon2id hashes and are never printed or logged.
 - Use `--db-path PATH` to target a different SQLite file.
+- The account and a `user.created` audit event (actor type `cli`) are written
+  in one transaction. If either cannot be stored, no account is created. The
+  audit event contains no email address, name or password.
 
 ### Signing in
 
@@ -146,7 +151,164 @@ interactive terminal:
   account is locked for `LOGIN_LOCKOUT_MINUTES` (default 15). Locks always
   expire, and a successful sign-in resets the counter.
 - Sign-in requires `JWT_SECRET_KEY` to be set; without it the endpoints return `503`.
-- The regulation and query endpoints are not protected yet.
+- Sign-in attempts are audited (see [Audit log](#audit-log)). If the audit event
+  cannot be written, the attempt is rolled back and `503` is returned.
+
+## API access control
+
+Every route is classified in `backend/app/api/permissions.py`, and a test fails
+if a route is added without a classification or with dependencies that do not
+match it. Roles and cohorts are always read from the `users` table, never from
+the token or the request. All paths below start with `/api/v1`.
+
+| Access | Routes |
+|---|---|
+| Public | `GET /health`, `POST /auth/login` (plus `GET /`, `/docs`, `/redoc`, `/openapi.json`) |
+| Any signed-in user | `GET /auth/me`, `GET /regulations`, `GET /regulations/{regulation_id}`, `GET /regulations/{regulation_id}/pages`, `GET /cohorts/{admission_batch}/{programme}/regulations`, `POST /query/ask` |
+| Administrators only | `POST /regulations/ingest`, `PATCH /regulations/{regulation_id}/verification`, every `/admin/users...` route, `GET /admin/audit-events` |
+
+- Missing, invalid, expired or revoked tokens and inactive accounts get `401`.
+  Students calling an administrator route get `403`.
+- Students see approved regulations only. On the cohort route and
+  `POST /query/ask`, students may only use the admission batch and programme
+  stored on their account (`403` otherwise). Administrators may use any cohort.
+
+## Administrator user management
+
+All routes require an administrator, return `Cache-Control: no-store`, and
+never return password hashes, token versions, failed sign-in counters or lock
+expiry. Account responses contain `id`, `email`, `role`, `full_name`,
+`admission_batch`, `programme`, `is_active`, `is_locked`, `last_login_at`,
+`created_at` and `updated_at`. Unknown request fields and query parameters are
+rejected with `422`.
+
+| Route | Behaviour |
+|---|---|
+| `GET /admin/users` | List accounts, ordered by id. Exact-match filters: `role`, `is_active`, `admission_batch`, `programme`. `limit` 1–100 (default 50), `offset` 0–1,000,000. Returns `users`, `total`, `limit`, `offset`. |
+| `POST /admin/users` | Create a **student** (`201`). Body: `email`, `password`, `admission_batch`, `programme`, optional `full_name`. There is no role field. The password must meet the password policy. A duplicate email gets `409`. |
+| `GET /admin/users/{user_id}` | One account. |
+| `PATCH /admin/users/{user_id}` | Change `full_name`, `admission_batch` and/or `programme` (at least one; `null` clears a value). Students must keep a cohort. |
+| `PATCH /admin/users/{user_id}/role` | Body `{"role": "student"}`: demote an administrator. Granting `administrator` is always refused (`403`). |
+| `POST /admin/users/{user_id}/password` | Body `{"new_password": "..."}`: set a **student's** password. Refused (`403`) for your own account and for any administrator. |
+| `POST /admin/users/{user_id}/deactivate` | Deactivate the account. |
+| `POST /admin/users/{user_id}/reactivate` | Reactivate an inactive account. |
+| `POST /admin/users/{user_id}/unlock` | Clear the failed sign-in counter and any temporary lock. |
+| `POST /admin/users/{user_id}/revoke-sessions` | Invalidate every access token issued to the account. |
+
+Policy:
+
+- **Administrators can only be created with the CLI** (see above). The API
+  cannot create or promote administrators.
+- Administrators cannot change their own role or active status, or reset their
+  own password (`403`). The last active administrator cannot be demoted or
+  deactivated (`409`).
+- Demotion, deactivation, password reset and `revoke-sessions` revoke the
+  account's existing tokens. Reactivation does not restore them; the user must
+  sign in again.
+- Each change runs in one transaction that re-checks the acting administrator
+  and writes the audit event. Requests that would change nothing write nothing.
+  A concurrent change to the same account can return `409` ("please retry").
+- Unknown accounts get `404`. Self-service password change and forced password
+  change at first sign-in are not implemented.
+
+## Audit log
+
+The `audit_events` table records security-relevant actions. It is append-only:
+SQLite triggers abort any update, delete or replacing insert. (Anyone with
+direct write access to the database file can still alter it.) Events are kept
+indefinitely; there is no automatic retention or deletion.
+
+Events never contain passwords, password hashes, tokens, email addresses, client
+IP addresses, question text or document content. Full names are never recorded.
+Every action and detail key comes from a fixed allowlist in
+`backend/app/audit/repository.py`.
+
+### What is recorded
+
+| Action | When |
+|---|---|
+| `auth.login_succeeded` | Successful sign-in. |
+| `auth.login_failed` | Failed sign-in to an **existing** account (`reason`: `invalid_password`, `account_locked` or `account_inactive`). Unknown emails are not recorded. |
+| `auth.account_locked` | A failed sign-in locked the account. |
+| `user.created` | First administrator created by the CLI, or a student created through the API. |
+| `user.updated` | Profile change: the changed field names and old/new cohort values. |
+| `user.role_changed`, `user.deactivated`, `user.password_reset` | Successful changes, and refusals (outcome `denied`, with a `reason`). |
+| `user.reactivated`, `user.unlocked`, `user.sessions_revoked` | Successful changes. |
+| `regulation.ingested` | Successful ingestion, or a failure during processing (`reason`: `invalid_metadata`, `invalid_pdf` or `internal_error`). |
+| `regulation.verification_changed` | Verification status changed (old and new status). |
+| `authorization.denied` | A signed-in user was refused with `403` (`reason`: `insufficient_role` or `cohort_mismatch`), with the HTTP method and route template (never the concrete URL). |
+
+Not recorded:
+- anonymous or `401` requests and sign-ins with unknown emails;
+- requests that fail validation before any change is attempted (`422`), and
+  unknown targets (`404`);
+- uploads rejected before processing (file type, metadata format, size or page
+  count);
+- verification requests for missing regulations or invalid statuses;
+- failed CLI attempts;
+- a sign-in refused because the password changed during that sign-in;
+- reading the audit log.
+
+### Consistency and limitations
+
+- **Same transaction:** sign-in events, user-management changes and refusals,
+  and the CLI bootstrap. If the audit event cannot be written, the change is
+  rolled back: sign-in returns `503`, user management returns `500`, and the
+  CLI creates no account.
+- **Not atomic: ingestion and verification.** The shared workflow code in
+  `app/` manages its own database connections, so the event is written after
+  the change. If that write fails, the API undoes the change and returns `500`:
+  - ingestion deletes the new pending regulation;
+  - verification restores the previous status, unless the status changed again
+    in the meantime or could not be read.
+
+  A crash between the change and the audit write, or a failed undo (logged at
+  CRITICAL), can still leave an unaudited change.
+- **Best effort: authorization refusals.** The `403` is always returned; if
+  its audit event cannot be written, the failure is logged at ERROR.
+
+### Listing audit events
+
+`GET /api/v1/admin/audit-events` (administrators only, read-only).
+
+- **Filters:** `action`, `outcome`, `actor_user_id`, `target_type` (`user` or
+  `regulation`), `target_id` (requires `target_type`), `occurred_after` and
+  `occurred_before`.
+  - The time bounds are inclusive and must include a timezone offset, for
+    example `2026-01-01T00:00:00Z`.
+  - Unknown actions or parameters get `422`.
+- **Order and pages:** newest first; events with the same timestamp are
+  ordered by id, highest first. `limit` 1–100 (default 50), `offset`
+  0–1,000,000.
+- **Response:** `events`, `total`, `limit`, `offset`. Each event has `id`,
+  `occurred_at`, `action`, `outcome`, `actor_type`, `actor_user_id`,
+  `actor_role`, `target_type`, `target_id` and `details`.
+- **Withheld details:** `details` contains only allowlisted keys. The failed
+  sign-in counter (`failed_login_count`) and lock expiry (`locked_until`)
+  recorded for sign-in events are never returned.
+- **Reads are not audited.** A student's refused request is still recorded as
+  `authorization.denied`.
+
+## Administrator account recovery
+
+There is **no dedicated recovery command**. These are the verified options:
+
+- **Locked out:** the lock expires after `LOGIN_LOCKOUT_MINUTES`, or another
+  administrator can call `unlock`.
+- **Deactivated:** another administrator can call `reactivate`.
+- **Lost or exposed token:** another administrator can call `revoke-sessions`.
+- **Forgotten password:** the API cannot reset any administrator's password.
+  - Someone with shell access to the server and database can run the
+    first-administrator script with a **different** email to create a new
+    administrator. This works even if no usable administrator remains.
+  - The new administrator can then deactivate or demote the old account.
+  - The old email cannot be reused: the script refuses existing emails and
+    accounts are never deleted. A demoted account cannot be promoted again
+    through the API.
+
+A secure recovery procedure for administrator accounts (for example, resetting
+an administrator's password from the command line) is not implemented. It
+should be documented or addressed before production.
 
 ## Planned module responsibilities
 

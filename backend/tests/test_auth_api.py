@@ -36,6 +36,7 @@ from backend.app.api.deps import (
 from backend.app.api.v1 import auth as auth_routes
 from backend.app.api.v1 import regulations as regulation_routes
 from backend.app.api.v1.auth import LOGIN_FAILED_DETAIL
+from backend.app.audit.repository import init_audit_tables
 from backend.app.auth.repository import (
     UserRecord,
     apply_login_attempt,
@@ -119,6 +120,7 @@ def env(tmp_path: Path) -> Iterator[Env]:
     db_path = tmp_path / "auth.db"
     init_database(db_path)
     init_auth_tables(db_path)
+    init_audit_tables(db_path)
     try:
         yield _install(db_path, make_settings())
     finally:
@@ -511,6 +513,7 @@ def test_successful_login_resets_the_failure_counter(env: Env) -> None:
 def test_lockout_threshold_and_duration_are_configurable(tmp_path: Path) -> None:
     db_path = tmp_path / "custom.db"
     init_auth_tables(db_path)
+    init_audit_tables(db_path)
     settings = make_settings(login_max_failed_attempts=2, login_lockout_minutes=1)
     password = strong_password()
     user = create_user("custom@uni.edu", password, "student", db_path=db_path)
@@ -588,6 +591,7 @@ def _run_concurrently(count: int, target: Any) -> list[BaseException]:
 def test_concurrent_failures_are_all_counted(tmp_path: Path) -> None:
     db_path = tmp_path / "race.db"
     init_auth_tables(db_path)
+    init_audit_tables(db_path)
     user = create_user("race@uni.edu", strong_password(), "student", db_path=db_path)
 
     errors = _run_concurrently(

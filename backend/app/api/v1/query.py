@@ -7,7 +7,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from backend.app.api.deps import AuthenticatedUser, get_current_user
+from backend.app.api.deps import AuthenticatedUser, DenialRecorder, get_current_user, get_denial_recorder
 from backend.app.api.permissions import COHORT_SCOPED_RESPONSES, ensure_cohort_access
 from backend.app.schemas.query import GroundedAnswerResponse, StudentQuestionRequest
 from backend.app.services import query_service
@@ -49,6 +49,7 @@ def ask_student_question(
     request: StudentQuestionRequest,
     db_path: Optional[str] = Depends(get_db_path),
     user: AuthenticatedUser = Depends(get_current_user),
+    record_denial: DenialRecorder = Depends(get_denial_recorder),
 ) -> GroundedAnswerResponse:
     """Answer a cohort-specific student question using approved evidence.
 
@@ -82,7 +83,7 @@ def ask_student_question(
         )
 
     # Retrieval filters (approved-only, cohort applicability) run on these values.
-    admission_batch, programme = ensure_cohort_access(user, admission_batch, programme)
+    admission_batch, programme = ensure_cohort_access(user, admission_batch, programme, record_denial=record_denial)
 
     try:
         result = query_service.answer_student_regulation_question(
