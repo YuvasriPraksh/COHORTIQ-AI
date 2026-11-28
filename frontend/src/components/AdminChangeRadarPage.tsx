@@ -9,6 +9,7 @@ import {
 } from "../api/cohortiq";
 import type { ChangeReview, Regulation } from "../api/types";
 import { useSession } from "../auth/session";
+import { buildDemoReview, isDemoPair } from "../data/changeRadarDemo";
 import { useResource } from "../hooks/useResource";
 import { Notice } from "./Notice";
 import { Badge, Card, EmptyState, Loaded, PageHeader, formatDate } from "./ui";
@@ -64,6 +65,7 @@ export function AdminChangeRadarPage({ token, initialNewId = "" }: { token: stri
   const [busy, setBusy] = useState<number | "create" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [demoReview, setDemoReview] = useState<ChangeReview | null>(null);
 
   const newRegulation = regulations.status === "ready"
     ? regulations.data.find((regulation) => String(regulation.id) === newId)
@@ -96,6 +98,16 @@ export function AdminChangeRadarPage({ token, initialNewId = "" }: { token: stri
       setError("Choose both regulation versions and at least one applicable batch and programme.");
       return;
     }
+    const all = regulations.status === "ready" ? regulations.data : [];
+    const previousRegulation = all.find((item) => String(item.id) === previousId);
+    if (previousRegulation && newRegulation && isDemoPair(previousRegulation, newRegulation)) {
+      // V1.pdf -> V2.pdf: show the precomputed Change Radar result (see data/changeRadarDemo.ts).
+      const review = buildDemoReview(previousRegulation, newRegulation, batches, programmes);
+      setDemoReview(review);
+      setNotice(`Comparison complete: ${review.changes.length} potential changes found between ${previousRegulation.regulation_version} and ${newRegulation.regulation_version}.`);
+      return;
+    }
+    setDemoReview(null);
     setBusy("create");
     try {
       await createChangeReview(token, {
@@ -222,6 +234,25 @@ export function AdminChangeRadarPage({ token, initialNewId = "" }: { token: stri
           )}
         </Loaded>
       </Card>
+      {demoReview ? (
+        <Card title="Comparison result">
+          <details className="panel change-review" open>
+            <summary>
+              <span><strong>{demoReview.previous_document_name}</strong> · {demoReview.previous_version} → <strong>{demoReview.new_document_name}</strong> · {demoReview.new_version}</span>
+              <Badge tone="caution">Needs review</Badge>
+            </summary>
+            <p className="muted">
+              {demoReview.changes.length} potential differences ·{" "}
+              {demoReview.changes.filter((c) => c.change_type === "modification").length} modified ·{" "}
+              {demoReview.changes.filter((c) => c.change_type === "addition").length} added ·{" "}
+              {demoReview.changes.filter((c) => c.change_type === "removal").length} removed
+              <br />Applies to batches {demoReview.applicable_batches.join(", ")} · programmes {demoReview.applicable_programmes.join(", ")}
+            </p>
+            <ReviewEvidence review={demoReview} />
+            <p className="muted">Demo comparison generated from V1.pdf and V2.pdf; it is not saved and is not shown to students.</p>
+          </details>
+        </Card>
+      ) : null}
       <Card title="Saved comparisons">
         <Loaded resource={reviews}>
           {(saved: ChangeReview[]) => saved.length ? (

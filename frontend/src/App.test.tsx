@@ -887,3 +887,32 @@ describe("unreachable backend", () => {
     expect(window.sessionStorage.getItem("cohortiq.session")).toBeNull();
   });
 });
+
+describe("change radar demo pair", () => {
+  it("shows the precomputed V1.pdf → V2.pdf comparison without calling the comparison API", async () => {
+    const base = {
+      effective_date: "2020-06-10", applicable_batches: ["2019", "2021"], applicable_programmes: ["B-Tech-IT"],
+      upload_date: "2026-11-28", total_pages: 4, processing_status: "extracted", verification_status: "approved",
+    };
+    const calls = mockApi({
+      [LOGIN]: TOKEN,
+      [ME]: { status: 200, body: ADMIN },
+      "GET /api/v1/regulations": { status: 200, body: { regulations: [
+        { ...base, id: 10, document_name: "V1 2020", regulation_version: "V1", source_filename: "V1.pdf" },
+        { ...base, id: 11, document_name: "V2 2020", regulation_version: "V2", source_filename: "V2.pdf", total_pages: 5 },
+      ] } },
+      "GET /api/v1/change-radar/reviews": { status: 200, body: { reviews: [] } },
+    });
+    const user = userEvent.setup();
+    await signIn(user, "administrator");
+    await user.click(await screen.findByRole("link", { name: "Change Radar" }));
+    await user.selectOptions(await screen.findByLabelText("Previous approved version"), "10");
+    await user.selectOptions(screen.getByLabelText("Newly uploaded version"), "11");
+    await user.click(screen.getByRole("button", { name: "Compare and save for review" }));
+
+    expect(await screen.findByText("Comparison complete: 16 potential changes found between V1 and V2.")).toBeInTheDocument();
+    expect(screen.getByText(/4\.1 A student must have a minimum of 75% attendance/)).toBeInTheDocument();
+    expect(screen.getByText(/4\.1 Every student shall maintain a minimum attendance of 80%/)).toBeInTheDocument();
+    expect(calls.some((call) => call.method === "POST" && call.url === "/api/v1/change-radar/reviews")).toBe(false);
+  });
+});
