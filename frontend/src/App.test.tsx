@@ -877,3 +877,13 @@ describe("academic impact twin", () => {
     expect(within(nav).queryByRole("link", { name: "My Academic Impact Twin" })).not.toBeInTheDocument();
   });
 });
+
+describe("unreachable backend", () => {
+  it("explains a proxy 502 as an unreachable server instead of a generic server error", async () => {
+    mockApi({ [LOGIN]: { status: 502, body: "An error occurred with this application.\n\nDNS_HOSTNAME_NOT_FOUND" } });
+    await signIn(userEvent.setup(), "administrator");
+    expect(await screen.findByText("The CohortIQ server can't be reached right now. Please try again shortly.")).toBeInTheDocument();
+    expect(screen.queryByText(/Something went wrong on our side/)).not.toBeInTheDocument();
+    expect(window.sessionStorage.getItem("cohortiq.session")).toBeNull();
+  });
+});

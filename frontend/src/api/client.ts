@@ -74,6 +74,14 @@ function errorFor(status: number, detail: string | null): ApiError {
   if (status === 503) {
     return new ApiError("unavailable", detail ?? "The service is temporarily unavailable. Please try again shortly.", status);
   }
+  if (status === 502 || status === 504) {
+    // A proxy (Vercel rewrite or tunnel) answered because the CohortIQ server could not be reached.
+    return new ApiError(
+      "unavailable",
+      "The CohortIQ server can't be reached right now. Please try again shortly.",
+      status,
+    );
+  }
   return new ApiError("server", detail ?? "Something went wrong on our side. Please try again later.", status);
 }
 
