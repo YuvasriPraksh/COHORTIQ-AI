@@ -320,6 +320,7 @@ def test_api_cannot_create_or_promote_administrators() -> None:
         "/api/v1/change-radar/reviews",
         "/api/v1/change-radar/reviews/{review_id}",
         "/api/v1/updates",
+        "/api/v1/impact-twin",
         "/api/v1/query/ask",
         "/api/v1/auth/login",
         "/api/v1/auth/me",

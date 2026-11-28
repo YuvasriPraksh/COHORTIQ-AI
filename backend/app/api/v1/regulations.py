@@ -489,6 +489,10 @@ async def ingest_regulation(
         "applicable_batches": batches,
         "applicable_programmes": programmes,
     }
+    # Original filename for the admin document panel: basename only, printable, bounded.
+    safe_filename = "".join(ch for ch in os.path.basename(filename.replace("\\", "/")) if ch.isprintable()).strip()[:255]
+    if safe_filename:
+        metadata["source_filename"] = safe_filename
     if upload_date is not None and upload_date.strip():
         metadata["upload_date"] = upload_date.strip()
     if processing_status is not None and processing_status.strip():

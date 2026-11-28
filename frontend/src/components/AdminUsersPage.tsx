@@ -159,7 +159,7 @@ export function AdminUsersPage({ token, currentUser }: { token: string; currentU
 
   return (
     <div className="stack">
-      <PageHeader
+      <PageHeader icon="users"
         title="User management"
         subtitle="Provision student and staff accounts, update cohort assignments, and manage account access. Administrators are securely provisioned outside public sign-up."
       />
@@ -192,7 +192,7 @@ export function AdminUsersPage({ token, currentUser }: { token: string; currentU
             </label>
             <label className="field">
               <span>Password</span>
-              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+              <input type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} />
             </label>
           </div>
           <CohortPicker
@@ -383,6 +383,7 @@ export function AdminUsersPage({ token, currentUser }: { token: string; currentU
                             <span>New password for {u.email}</span>
                             <input
                               type="password"
+                              autoComplete="new-password"
                               value={newPassword}
                               onChange={(e) => setNewPassword(e.target.value)}
                             />

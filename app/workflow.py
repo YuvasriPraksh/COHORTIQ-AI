@@ -163,7 +163,7 @@ def _validate_admin_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
     )
 
     # Pass through optional fields only when explicitly provided.
-    for optional_key in ("total_pages", "processing_status"):
+    for optional_key in ("total_pages", "processing_status", "source_filename"):
         if optional_key in metadata:
             normalized[optional_key] = metadata.get(optional_key)
     return normalized

@@ -7,7 +7,7 @@ export function UpdatesPage({ token }: { token: string }) {
   const updates = useResource(`${token}:approved-updates`, (signal) => listApprovedUpdates(token, signal));
   return (
     <div className="page-stack">
-      <PageHeader title="Approved regulation updates" subtitle="Only administrator-approved reviews that also reference an approved regulation and match your account cohort are shown here." />
+      <PageHeader icon="bell" title="Approved regulation updates" subtitle="Only administrator-approved reviews that also reference an approved regulation and match your account cohort are shown here." />
       <Loaded resource={updates}>
         {(items: ChangeReview[]) => items.length ? (
           <div className="page-stack">

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { ApiError } from "../api/client";
 import {
@@ -52,13 +52,13 @@ function isApproved(status: string | null): boolean {
   );
 }
 
-export function AdminChangeRadarPage({ token }: { token: string }) {
+export function AdminChangeRadarPage({ token, initialNewId = "" }: { token: string; initialNewId?: string }) {
   const { handleUnauthorized } = useSession();
   const [revision, setRevision] = useState(0);
   const regulations = useResource(`${token}:regulations:${revision}`, (signal) => listRegulations(token, signal));
   const reviews = useResource(`${token}:reviews:${revision}`, (signal) => listChangeReviews(token, signal));
   const [previousId, setPreviousId] = useState("");
-  const [newId, setNewId] = useState("");
+  const [newId, setNewId] = useState(initialNewId);
   const [batches, setBatches] = useState<string[]>([]);
   const [programmes, setProgrammes] = useState<string[]>([]);
   const [busy, setBusy] = useState<number | "create" | null>(null);
@@ -68,6 +68,26 @@ export function AdminChangeRadarPage({ token }: { token: string }) {
   const newRegulation = regulations.status === "ready"
     ? regulations.data.find((regulation) => String(regulation.id) === newId)
     : undefined;
+
+  // Arriving from Stored Regulations ("Compare"): preselect the new version, its applicability,
+  // and an approved earlier version of the same document.
+  const preselected = useRef(false);
+  useEffect(() => {
+    if (preselected.current || !initialNewId || regulations.status !== "ready") return;
+    preselected.current = true;
+    const target = regulations.data.find((item) => String(item.id) === initialNewId);
+    if (!target) return;
+    setBatches(target.applicable_batches);
+    setProgrammes(target.applicable_programmes);
+    const partner = regulations.data.find(
+      (item) =>
+        item.id !== target.id &&
+        item.document_name.trim().toLowerCase() === target.document_name.trim().toLowerCase() &&
+        item.regulation_version !== target.regulation_version &&
+        isApproved(item.verification_status),
+    );
+    if (partner) setPreviousId(String(partner.id));
+  }, [initialNewId, regulations]);
 
   async function compare() {
     setError(null);
@@ -113,6 +133,7 @@ export function AdminChangeRadarPage({ token }: { token: string }) {
   return (
     <div className="page-stack">
       <PageHeader
+        icon="radar"
         title="Regulation Change Radar"
         subtitle="Compare stored PDF versions, inspect source-page evidence, and record an administrator review. Detected differences are not academic conclusions."
       />

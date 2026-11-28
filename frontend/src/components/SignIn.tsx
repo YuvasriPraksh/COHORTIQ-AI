@@ -10,13 +10,22 @@ import {
 } from "../api/types";
 import { useSession } from "../auth/session";
 import { navigate } from "../nav/router";
+import { Brand, ThemeToggle } from "../site/PublicLayout";
 import { CohortPicker, useCohorts } from "./CohortPicker";
+import { Icon, type IconName } from "./icons";
 import { Notice } from "./Notice";
 
 type Mode = "signin" | "register";
+type RegisterTab = "student" | "staff";
 
 const PASSWORD_RULE =
   "At least 12 characters using three of: lowercase, uppercase, digits, symbols (or a 20+ character passphrase).";
+
+const ROLES: { role: AccountRole; title: string; icon: IconName; domain: string }[] = [
+  { role: "student", title: "Student", icon: "graduation", domain: STUDENT_EMAIL_DOMAIN },
+  { role: "staff", title: "Staff / Teacher", icon: "userCheck", domain: STAFF_EMAIL_DOMAIN },
+  { role: "administrator", title: "Administrator", icon: "shield", domain: ADMINISTRATOR_EMAIL_DOMAIN },
+];
 
 function PasswordField({
   value,
@@ -51,10 +60,23 @@ function PasswordField({
   );
 }
 
-const roleTitles: Record<AccountRole, string> = {
-  student: "Student",
-  staff: "Staff / Teacher",
-  administrator: "Administrator",
+const ASIDE: Record<Mode, { title: string; points: { icon: IconName; text: string }[] }> = {
+  signin: {
+    title: "Welcome back.",
+    points: [
+      { icon: "target", text: "Your workspace opens with the cohort stored on your account." },
+      { icon: "shield", text: "Your account's role — not this form — decides what you can open." },
+      { icon: "clock", text: "Sessions end automatically when your sign-in expires." },
+    ],
+  },
+  register: {
+    title: "Start asking in a minute.",
+    points: [
+      { icon: "graduation", text: "Register with your institutional student email." },
+      { icon: "layers", text: "Choose the batch and programme your college lists for you." },
+      { icon: "pages", text: "Ask a question and check the cited page." },
+    ],
+  },
 };
 
 export function SignIn({
@@ -68,7 +90,8 @@ export function SignIn({
 }) {
   const { signIn } = useSession();
   const [mode, setMode] = useState<Mode>(initialMode);
-  const [selectedRole, setSelectedRole] = useState<AccountRole | null>(initialRole);
+  const [registerTab, setRegisterTab] = useState<RegisterTab>("student");
+  const [selectedRole, setSelectedRole] = useState<AccountRole>(initialRole ?? "student");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");
@@ -80,24 +103,16 @@ export function SignIn({
   const ruleId = useId();
   const emailHintId = useId();
 
-  function switchMode(next: Mode) {
+  function switchMode(next: Mode, role?: AccountRole) {
     setMode(next);
+    if (role) setSelectedRole(role);
     setError(null);
     setDuplicate(false);
     setPassword("");
   }
 
-  function chooseRole(next: AccountRole) {
-    setSelectedRole(next);
-    switchMode("signin");
-  }
-
   async function onSignIn(event: FormEvent) {
     event.preventDefault();
-    if (!selectedRole) {
-      setError("Choose your account type before signing in.");
-      return;
-    }
     if (!email.trim() || !password) {
       setError("Enter your email and password.");
       return;
@@ -116,10 +131,6 @@ export function SignIn({
 
   async function onRegister(event: FormEvent) {
     event.preventDefault();
-    if (selectedRole !== "student") {
-      setError("Public registration is available for students only.");
-      return;
-    }
     const address = email.trim().toLowerCase();
     if (!address || !password || !batch.trim() || !programme.trim()) {
       setError("Enter your college email, a password, your admission batch and your programme.");
@@ -152,6 +163,7 @@ export function SignIn({
     } catch (caught) {
       // The account exists; only the automatic sign-in failed.
       setMode("signin");
+      setSelectedRole("student");
       setPassword("");
       setError(
         `Your account was created, but signing in failed: ${
@@ -162,152 +174,207 @@ export function SignIn({
     }
   }
 
-  const registering = mode === "register" && selectedRole === "student";
-  const cohortResource = useCohorts(registering);
+  const registeringStudent = mode === "register" && registerTab === "student";
+  const cohortResource = useCohorts(registeringStudent);
+  const aside = ASIDE[mode];
+  const roleInfo = ROLES.find((item) => item.role === selectedRole)!;
 
   return (
-    <main className="signin">
-      <section className="signin__intro">
-        <a className="brand brand--large brand--link" href="#/" onClick={(event) => { event.preventDefault(); navigate("/"); }}>
-          <span className="brand__mark" aria-hidden="true" />
-          CohortIQ
-        </a>
-        <p className="signin__tagline">Academic guidance grounded in the regulations that apply to you.</p>
-        <ul className="signin__points">
-          <li>Answers from the regulations that apply to your batch</li>
-          <li>Every answer shows the pages it relies on</li>
-          <li>Says so plainly when the regulations don't cover it</li>
-        </ul>
-      </section>
+    <div className="auth">
+      <header className="auth__top">
+        <Brand />
+        <div className="auth__top-actions">
+          <ThemeToggle />
+          <a className="button button--ghost button--compact" href="#/">
+            Back to home
+          </a>
+        </div>
+      </header>
 
-      <section className="panel signin__card" aria-labelledby="signin-heading">
-        <h1 id="signin-heading" className="signin__title">
-          {registering ? "Create student account" : "Sign in"}
-        </h1>
-        <p className="signin__subtitle">
-          {registering
-            ? `Register with your institutional student email (@${STUDENT_EMAIL_DOMAIN}).`
-            : selectedRole
-              ? `Continue as ${roleTitles[selectedRole]}. Sign in with your registered account${
-                  selectedRole === "student" ? "." : ` (@${selectedRole === "staff" ? STAFF_EMAIL_DOMAIN : ADMINISTRATOR_EMAIL_DOMAIN}).`
-                }`
-              : "Choose the account type associated with your registered account."}
-        </p>
-        {selectedRole ? (
-          <div className={`selected-role selected-role--${selectedRole}`}>
-            <span className="selected-role__label">Selected role</span>
-            <strong>{roleTitles[selectedRole]}</strong>
-            <button type="button" className="link-button" onClick={() => navigate("/")}>Change role</button>
-          </div>
-        ) : (
-          <fieldset className="role-picker">
-            <legend>Choose your account type</legend>
-            {(["student", "staff", "administrator"] as const).map((role) => (
-              <label key={role}>
-                <input type="radio" name="account-role" value={role} checked={selectedRole === role} onChange={() => chooseRole(role)} />
-                {roleTitles[role]}
-              </label>
+      <div className="auth__layout">
+        <aside className="auth__aside" aria-hidden="true">
+          <div className="auth__aside-glow" />
+          <p className="eyebrow eyebrow--light">CohortIQ</p>
+          <h2>{aside.title}</h2>
+          <ul>
+            {aside.points.map((point) => (
+              <li key={point.text}>
+                <span><Icon name={point.icon} size={18} /></span>
+                {point.text}
+              </li>
             ))}
-          </fieldset>
-        )}
-        {notice && !registering ? <Notice title={notice} /> : null}
-        {selectedRole && selectedRole !== "student" ? (
-          <Notice
-            tone="info"
-            title={selectedRole === "staff" ? `Staff accounts (@${STAFF_EMAIL_DOMAIN}) are provisioned by an administrator.` : `Administrator accounts (@${ADMINISTRATOR_EMAIL_DOMAIN}) are securely provisioned; public sign-up is unavailable.`}
-          />
-        ) : null}
-        {error ? (
-          <Notice
-            tone="error"
-            title={error}
-            action={
-              duplicate ? (
-                <button type="button" className="button button--ghost" onClick={() => switchMode("signin")}>
-                  Go to sign in
-                </button>
-              ) : undefined
-            }
-          />
-        ) : null}
+          </ul>
+          <div className="auth__aside-card">
+            <span className="pill pill--good"><Icon name="checkCircle" size={13} /> Grounded answer</span>
+            <p>“Attendance of 95% and above earns the full 5 marks.”</p>
+            <small>R2023 · Page 15</small>
+          </div>
+        </aside>
 
-        {registering ? (
-          <form onSubmit={onRegister} className="form" noValidate>
-            <label className="field">
-              <span>Full name (optional)</span>
-              <input autoComplete="name" value={fullName} onChange={(e) => setFullName(e.target.value)} maxLength={200} />
-            </label>
-            <label className="field">
-              <span>Student email</span>
-              <input
-                type="email"
-                autoComplete="username"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder={`name@${STUDENT_EMAIL_DOMAIN}`}
-                required
-                maxLength={254}
-                aria-describedby={emailHintId}
-              />
-            </label>
-            <p id={emailHintId} className="field__hint">
-              Must end in @{STUDENT_EMAIL_DOMAIN}.
-            </p>
-            <PasswordField value={password} onChange={setPassword} autoComplete="new-password" describedBy={ruleId} />
-            <p id={ruleId} className="field__hint">
-              {PASSWORD_RULE}
-            </p>
-            <CohortPicker
-              cohorts={cohortResource.cohorts}
-              loading={cohortResource.loading}
-              error={cohortResource.error}
-              onRetry={cohortResource.reload}
-              batch={batch}
-              programme={programme}
-              onChange={(nextBatch, nextProgramme) => {
-                setBatch(nextBatch);
-                setProgramme(nextProgramme);
-              }}
+        <main className="auth__card panel" aria-labelledby="auth-heading">
+          {mode === "register" ? (
+            <>
+              <h1 id="auth-heading" className="auth__title">
+                {registeringStudent ? "Create student account" : "Staff / Teacher accounts"}
+              </h1>
+              <div className="segmented" role="tablist" aria-label="Account type to register">
+                {(["student", "staff"] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    role="tab"
+                    aria-selected={registerTab === tab}
+                    className={`segmented__option${registerTab === tab ? " is-active" : ""}`}
+                    onClick={() => {
+                      setRegisterTab(tab);
+                      setError(null);
+                    }}
+                  >
+                    <Icon name={tab === "student" ? "graduation" : "userCheck"} size={16} />
+                    {tab === "student" ? "Student" : "Staff / Teacher"}
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <h1 id="auth-heading" className="auth__title">Sign in</h1>
+              <p className="auth__subtitle">Choose your account type, then sign in with your registered email.</p>
+              <fieldset className="role-select">
+                <legend className="visually-hidden">Account type</legend>
+                {ROLES.map((item) => (
+                  <label key={item.role} className={`role-select__option${selectedRole === item.role ? " is-active" : ""}`}>
+                    <input
+                      type="radio"
+                      name="account-role"
+                      value={item.role}
+                      checked={selectedRole === item.role}
+                      onChange={() => {
+                        setSelectedRole(item.role);
+                        setError(null);
+                      }}
+                    />
+                    <Icon name={item.icon} size={18} />
+                    <span>{item.title}</span>
+                  </label>
+                ))}
+              </fieldset>
+            </>
+          )}
+
+          {notice && mode === "signin" ? <Notice title={notice} /> : null}
+          {error ? (
+            <Notice
+              tone="error"
+              title={error}
+              action={
+                duplicate ? (
+                  <button type="button" className="button button--ghost" onClick={() => switchMode("signin", "student")}>
+                    Go to sign in
+                  </button>
+                ) : undefined
+              }
             />
-            <p className="field__hint">
-              Enter your batch and programme exactly as your college lists them; they decide which regulations apply.
-            </p>
-            <button type="submit" className="button button--primary button--wide" disabled={submitting}>
-              {submitting ? <span className="spinner" aria-hidden="true" /> : null}
-              {submitting ? "Creating account…" : "Create account"}
-            </button>
-          </form>
-        ) : (
-          <form onSubmit={onSignIn} className="form" noValidate>
-            <label className="field">
-              <span>Email</span>
-              <input
-                type="email"
-                autoComplete="username"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                maxLength={254}
-              />
-            </label>
-            <PasswordField value={password} onChange={setPassword} autoComplete="current-password" />
-            <button type="submit" className="button button--primary button--wide" disabled={submitting}>
-              {submitting ? <span className="spinner" aria-hidden="true" /> : null}
-              {submitting ? "Signing in…" : "Sign in"}
-            </button>
-          </form>
-        )}
+          ) : null}
 
-        {selectedRole === "student" ? (
-          <p className="signin__switch">
-            {registering ? "Already have an account?" : "New to CohortIQ?"}{" "}
-            <button type="button" className="link-button" onClick={() => switchMode(registering ? "signin" : "register")}>
-              {registering ? "Sign in" : "Create an account"}
+          {mode === "register" && registerTab === "staff" ? (
+            <div className="staff-info">
+              <p>
+                Staff and teacher accounts are created by a CohortIQ administrator and assigned to the batch and programme you teach. This keeps
+                staff access tied to verified assignments.
+              </p>
+              <ol className="staff-info__steps">
+                <li><span>1</span> Ask your department's CohortIQ administrator for an account.</li>
+                <li><span>2</span> They create it with your @{STAFF_EMAIL_DOMAIN} address and assigned cohort.</li>
+                <li><span>3</span> Sign in as Staff / Teacher with the credentials they provide.</li>
+              </ol>
+              <button type="button" className="button button--primary button--wide" onClick={() => switchMode("signin", "staff")}>
+                I have a staff account — sign in
+              </button>
+              <p className="auth__fine"><Icon name="lock" size={13} /> Administrator accounts are provisioned securely and cannot be registered publicly.</p>
+            </div>
+          ) : null}
+
+          {registeringStudent ? (
+            <form onSubmit={onRegister} className="form" noValidate>
+              <label className="field">
+                <span>Full name (optional)</span>
+                <input autoComplete="name" value={fullName} onChange={(e) => setFullName(e.target.value)} maxLength={200} />
+              </label>
+              <label className="field">
+                <span>Student email</span>
+                <input
+                  type="email"
+                  autoComplete="username"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder={`name@${STUDENT_EMAIL_DOMAIN}`}
+                  required
+                  maxLength={254}
+                  aria-describedby={emailHintId}
+                />
+              </label>
+              <p id={emailHintId} className="field__hint">Must end in @{STUDENT_EMAIL_DOMAIN}.</p>
+              <PasswordField value={password} onChange={setPassword} autoComplete="new-password" describedBy={ruleId} />
+              <p id={ruleId} className="field__hint">{PASSWORD_RULE}</p>
+              <CohortPicker
+                cohorts={cohortResource.cohorts}
+                loading={cohortResource.loading}
+                error={cohortResource.error}
+                onRetry={cohortResource.reload}
+                batch={batch}
+                programme={programme}
+                onChange={(nextBatch, nextProgramme) => {
+                  setBatch(nextBatch);
+                  setProgramme(nextProgramme);
+                }}
+              />
+              <p className="field__hint">Enter your batch and programme exactly as your college lists them; they decide which regulations apply.</p>
+              <button type="submit" className="button button--primary button--wide" disabled={submitting}>
+                {submitting ? <span className="spinner" aria-hidden="true" /> : null}
+                {submitting ? "Creating account…" : "Create account"}
+              </button>
+            </form>
+          ) : null}
+
+          {mode === "signin" ? (
+            <form onSubmit={onSignIn} className="form" noValidate>
+              <label className="field">
+                <span>Email</span>
+                <input
+                  type="email"
+                  autoComplete="username"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder={`name@${roleInfo.domain}`}
+                  required
+                  maxLength={254}
+                />
+              </label>
+              <PasswordField value={password} onChange={setPassword} autoComplete="current-password" />
+              {selectedRole !== "student" ? (
+                <p className="auth__fine">
+                  <Icon name="info" size={13} />
+                  {selectedRole === "staff"
+                    ? ` Staff accounts (@${STAFF_EMAIL_DOMAIN}) are provisioned by an administrator.`
+                    : ` Administrator accounts (@${ADMINISTRATOR_EMAIL_DOMAIN}) are securely provisioned; public sign-up is unavailable.`}
+                </p>
+              ) : null}
+              <button type="submit" className="button button--primary button--wide" disabled={submitting}>
+                {submitting ? <span className="spinner" aria-hidden="true" /> : null}
+                {submitting ? "Signing in…" : "Sign in"}
+              </button>
+            </form>
+          ) : null}
+
+          <p className="auth__switch">
+            {mode === "register" ? "Already have an account?" : "New student?"}{" "}
+            <button type="button" className="link-button" onClick={() => switchMode(mode === "register" ? "signin" : "register")}>
+              {mode === "register" ? "Sign in" : "Create an account"}
             </button>
           </p>
-        ) : null}
-        <p className="signin__switch"><a href="#/" onClick={(event) => { event.preventDefault(); navigate("/"); }}>Back to role selection</a></p>
-      </section>
-    </main>
+        </main>
+      </div>
+    </div>
   );
 }

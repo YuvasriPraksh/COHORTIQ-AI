@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -178,6 +178,8 @@ const CHANGE_REVIEW: ChangeReview = {
   warning: "Potential changes — review required.",
 };
 
+const HERO = "Your Academic Rules. Always Within Reach.";
+
 function renderApp() {
   window.history.replaceState(null, "", window.location.pathname + window.location.search);
   return render(
@@ -187,12 +189,24 @@ function renderApp() {
   );
 }
 
-async function signIn(user = userEvent.setup(), role: "student" | "staff" | "administrator" = "student") {
+function goTo(path: string) {
+  act(() => {
+    window.location.hash = path;
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+  });
+}
+
+async function openSignIn() {
   renderApp();
+  await screen.findByRole("heading", { name: HERO });
+  goTo("/signin");
+  await screen.findByRole("heading", { name: "Sign in" });
+}
+
+async function signIn(user = userEvent.setup(), role: "student" | "staff" | "administrator" = "student") {
+  await openSignIn();
   const title = role === "student" ? "Student" : role === "staff" ? "Staff / Teacher" : "Administrator";
-  const card = (await screen.findByRole("heading", { name: title })).closest("article");
-  if (!card) throw new Error(`Missing ${title} role card.`);
-  await user.click(within(card).getByRole("button", { name: "Continue" }));
+  await user.click(screen.getByRole("radio", { name: title }));
   await user.type(
     await screen.findByLabelText("Email"),
     role === "student" ? "asha@student.smvec.ac.in" : role === "staff" ? "teacher@staff.smvec.ac.in" : "admin@admin.smvec.ac.in",
@@ -256,12 +270,8 @@ describe("sign in → ask → answer", () => {
   it("asks for both fields before calling the API", async () => {
     const calls = mockApi({});
     const user = userEvent.setup();
-    renderApp();
-
-    const studentCard = (await screen.findByRole("heading", { name: "Student" })).closest("article");
-    if (!studentCard) throw new Error("Missing student role card.");
-    await user.click(within(studentCard).getByRole("button", { name: "Continue" }));
-    await user.click(await screen.findByRole("button", { name: "Sign in" }));
+    await openSignIn();
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
 
     expect(screen.getByText("Enter your email and password.")).toBeInTheDocument();
     expect(calls).toHaveLength(0);
@@ -371,7 +381,7 @@ describe("errors", () => {
     await ask(await signIn(), "What attendance do I need?");
 
     expect(await screen.findByText("Your session has ended. Please sign in again.")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Know the rule. See the evidence." })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Your Academic Rules. Always Within Reach." })).toBeInTheDocument();
   });
 
   it("shows the cohort refusal and retries on request", async () => {
@@ -517,7 +527,7 @@ describe("session", () => {
 
     renderApp();
 
-    expect(await screen.findByRole("heading", { name: "Know the rule. See the evidence." })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Your Academic Rules. Always Within Reach." })).toBeInTheDocument();
     expect(calls).toHaveLength(0);
     expect(window.sessionStorage.getItem("cohortiq.session")).toBeNull();
   });
@@ -530,34 +540,49 @@ describe("session", () => {
     expect(window.sessionStorage.getItem("cohortiq.session")).not.toBeNull();
     await user.click(screen.getByRole("button", { name: "Sign out" }));
 
-    await waitFor(() => expect(screen.getByRole("heading", { name: "Know the rule. See the evidence." })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Your Academic Rules. Always Within Reach." })).toBeInTheDocument());
     expect(window.sessionStorage.getItem("cohortiq.session")).toBeNull();
   });
 });
 
 describe("public entry and role routing", () => {
-  it("shows all three role choices and an existing-user sign-in link", async () => {
+  it("shows the landing page with working navigation, theme toggle and entry links", async () => {
+    const user = userEvent.setup();
     renderApp();
 
-    expect(await screen.findByRole("heading", { name: "Know the rule. See the evidence." })).toBeInTheDocument();
-    for (const role of ["Student", "Staff / Teacher", "Administrator"]) {
-      expect(screen.getByRole("heading", { name: role })).toBeInTheDocument();
-    }
-    expect(screen.getAllByRole("button", { name: "Continue" })).toHaveLength(3);
-    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "#/signin");
-    expect(screen.getAllByRole("link", { name: "Sign up" })[0]).toHaveAttribute("href", "#/signup");
-    expect(screen.getAllByText(/What can I do here\?/)).toHaveLength(3);
+    expect(await screen.findByRole("heading", { name: HERO })).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Primary" });
+    expect(within(nav).getByRole("link", { name: "Home" })).toHaveAttribute("href", "#/");
+    expect(within(nav).getByRole("link", { name: "Features" })).toHaveAttribute("href", "#/features");
+    expect(within(nav).getByRole("link", { name: "How It Works" })).toHaveAttribute("href", "#/how-it-works");
+    expect(within(nav).getByRole("link", { name: "About" })).toHaveAttribute("href", "#/about");
+    expect(screen.getAllByRole("link", { name: "Sign In" })[0]).toHaveAttribute("href", "#/signin");
+    expect(screen.getAllByRole("link", { name: "Get Started" })[0]).toHaveAttribute("href", "#/signup");
+    // Role selection lives on the sign-in page, not as repeated cards on the landing page.
+    expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+
+    const before = document.documentElement.dataset.theme;
+    await user.click(screen.getByRole("button", { name: /Switch to (light|dark) theme/ }));
+    expect(document.documentElement.dataset.theme).not.toBe(before);
+
+    goTo("/features");
+    expect(await screen.findByRole("heading", { name: "Everything CohortIQ does today" })).toBeInTheDocument();
+    goTo("/how-it-works");
+    expect(await screen.findByRole("heading", { name: "From a regulation PDF to a cited answer" })).toBeInTheDocument();
+    goTo("/about");
+    expect(await screen.findByRole("heading", { name: /Making academic regulations answerable/ })).toBeInTheDocument();
   });
 
-  it("opens student registration from the public Sign up link", async () => {
+  it("opens student registration from Get Started", async () => {
     mockApi({ [COHORTS]: AVAILABLE_COHORTS });
     renderApp();
-
-    await userEvent.setup().click(screen.getAllByRole("link", { name: "Sign up" })[0]!);
+    await screen.findByRole("heading", { name: HERO });
+    goTo("/signup");
 
     expect(await screen.findByRole("heading", { name: "Create student account" })).toBeInTheDocument();
-    expect(screen.getByText("Selected role")).toBeInTheDocument();
-    expect(screen.getByText("Student", { selector: ".selected-role strong" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Student" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Staff / Teacher" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /Administrator/ })).not.toBeInTheDocument();
   });
 
   it("compares versions, records applicability, and submits administrator review actions", async () => {
@@ -614,16 +639,47 @@ describe("public entry and role routing", () => {
   });
 
   it("does not offer public staff or administrator registration", async () => {
+    mockApi({ [COHORTS]: AVAILABLE_COHORTS });
     const user = userEvent.setup();
     renderApp();
+    await screen.findByRole("heading", { name: HERO });
+    goTo("/signup");
 
-    const card = (await screen.findByRole("heading", { name: "Administrator" })).closest("article");
-    if (!card) throw new Error("Missing administrator role card.");
-    await user.click(within(card).getByRole("button", { name: "Continue" }));
+    await user.click(await screen.findByRole("tab", { name: "Staff / Teacher" }));
+    expect(screen.getByRole("heading", { name: "Staff / Teacher accounts" })).toBeInTheDocument();
+    expect(screen.getByText(/created by a CohortIQ administrator/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create account" })).not.toBeInTheDocument();
+    expect(screen.getByText(/cannot be registered publicly/)).toBeInTheDocument();
 
+    await user.click(screen.getByRole("button", { name: /I have a staff account/ }));
+    expect(screen.getByRole("radio", { name: "Staff / Teacher" })).toBeChecked();
+    await user.click(screen.getByRole("radio", { name: "Administrator" }));
     expect(screen.getByText(/public sign-up is unavailable/i)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Create an account" })).not.toBeInTheDocument();
-    expect(screen.getByText("Selected role")).toBeInTheDocument();
+  });
+
+  it("shows the administrator sidebar without Modules and opens the separate regulation pages", async () => {
+    mockApi({
+      [LOGIN]: TOKEN,
+      [ME]: { status: 200, body: ADMIN },
+      "GET /api/v1/regulations": { status: 200, body: { regulations: CHANGE_RADAR_REGULATIONS } },
+    });
+    const user = userEvent.setup();
+    await signIn(user, "administrator");
+
+    const nav = await screen.findByRole("navigation", { name: "Main navigation" });
+    for (const label of ["Dashboard", "Ask", "Upload Regulations", "Stored Regulations", "Change Radar", "Users", "Audit Log"]) {
+      expect(within(nav).getByRole("link", { name: label })).toBeInTheDocument();
+    }
+    expect(within(nav).queryByRole("link", { name: "Modules" })).not.toBeInTheDocument();
+
+    await user.click(within(nav).getByRole("link", { name: "Upload Regulations" }));
+    expect(await screen.findByRole("heading", { name: "Upload Regulations" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Browse files" })).toBeInTheDocument();
+
+    await user.click(within(nav).getByRole("link", { name: "Stored Regulations" }));
+    expect(await screen.findByRole("heading", { name: "Stored Regulations" })).toBeInTheDocument();
+    expect(await screen.findByText("Total documents")).toBeInTheDocument();
+    expect(screen.getAllByText("Filename unavailable for legacy upload").length).toBeGreaterThan(0);
   });
 
   it("shows a clear denial when the backend rejects the selected role", async () => {
@@ -646,10 +702,7 @@ describe("registration", () => {
 
   async function openRegistration() {
     const user = userEvent.setup();
-    renderApp();
-    const card = (await screen.findByRole("heading", { name: "Student" })).closest("article");
-    if (!card) throw new Error("Missing student role card.");
-    await user.click(within(card).getByRole("button", { name: "Continue" }));
+    await openSignIn();
     await user.click(await screen.findByRole("button", { name: "Create an account" }));
     expect(screen.getByRole("heading", { name: "Create student account" })).toBeInTheDocument();
     return user;
@@ -745,5 +798,82 @@ describe("registration", () => {
     await user.click(screen.getByRole("button", { name: "Retry" }));
 
     expect(await screen.findByRole("combobox", { name: "Cohort" })).toHaveTextContent("Batch 2024 · B-tech - CSE");
+  });
+});
+
+describe("academic impact twin", () => {
+  const TWIN = {
+    cohort: { admission_batch: "2024", programme: "B-tech - CSE" },
+    applicable_regulations: [{ id: 21, document_name: "Academic Regulation", regulation_version: "2023", effective_date: "2023-08-19" }],
+    latest_update: { review_id: 11, document_name: "Academic Regulation", previous_version: "2023", new_version: "2024", reviewed_at: "2026-01-11T09:00:00Z", change_count: 2 },
+    summary: { potential_impact: 1, requires_review: 1, no_direct_impact: 0, total: 2 },
+    assessments: [
+      {
+        review_id: 11, change_id: 1, document_name: "Academic Regulation", previous_regulation_id: 21, previous_version: "2023",
+        new_regulation_id: 22, new_version: "2024", reviewed_at: "2026-01-11T09:00:00Z", change_type: "modification", clause: "5.1",
+        previous_page: 12, new_page: 14, previous_text: "Minimum attendance is 75%.", new_text: "Minimum attendance is 80%.",
+        previous_text_truncated: false, new_text_truncated: false,
+        applicability: "An administrator recorded this update for Batch 2024 · B-tech - CSE, which matches the cohort on your account.",
+        classification: "potential_impact", classification_label: "Potential Impact",
+        classification_reason: "Numeric values in this clause changed between the two versions.",
+        previous_values: ["75%"], revised_values: ["80%"], text_similarity: 0.8, topics: ["attendance"],
+        implications: ["This clause relates to attendance."], review_points: ["Read the revised clause on page 14 of Academic Regulation 2024."],
+      },
+      {
+        review_id: 11, change_id: 2, document_name: "Academic Regulation", previous_regulation_id: 21, previous_version: "2023",
+        new_regulation_id: 22, new_version: "2024", reviewed_at: "2026-01-11T09:00:00Z", change_type: "addition", clause: "5.2",
+        previous_page: null, new_page: 15, previous_text: null, new_text: "Students must follow the examination schedule.",
+        previous_text_truncated: false, new_text_truncated: false, applicability: "Matches your cohort.",
+        classification: "requires_review", classification_label: "Requires Review",
+        classification_reason: "A clause appears in the revised version that has no matching passage in the previous version.",
+        previous_values: [], revised_values: [], text_similarity: 0, topics: ["examinations and assessment"],
+        implications: ["New text may introduce a requirement."], review_points: ["Read the revised clause on page 15."],
+      },
+    ],
+    personal_records_available: false,
+    personalization_note: "This is a cohort-level assessment based on regulation text.",
+  };
+
+  it("shows the student's cohort, approved changes with before/after text and page evidence, and filters by impact", async () => {
+    const calls = mockApi({ [LOGIN]: TOKEN, [ME]: { status: 200, body: STUDENT }, "GET /api/v1/impact-twin": { status: 200, body: TWIN } });
+    const user = await signIn();
+    await user.click(await screen.findByRole("link", { name: "My Academic Impact Twin" }));
+
+    expect(await screen.findByRole("heading", { name: "My Academic Impact Twin" })).toBeInTheDocument();
+    const profile = screen.getByRole("region", { name: "Your academic profile" });
+    expect(within(profile).getByText("2024")).toBeInTheDocument();
+    expect(within(profile).getByText("B-tech - CSE")).toBeInTheDocument();
+    expect(within(profile).getByText("Academic Regulation · 2023 → 2024")).toBeInTheDocument();
+    expect(screen.getByText("Minimum attendance is 75%.")).toBeInTheDocument();
+    expect(screen.getByText("Minimum attendance is 80%.")).toBeInTheDocument();
+    expect(screen.getByText("Previous · 2023 · page 12")).toBeInTheDocument();
+    expect(screen.getByText("Revised · 2024 · page 14")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Open revised page 14/ })).toBeInTheDocument();
+    expect(screen.getAllByText("Does this apply to my admission batch?").length).toBe(2);
+    // The request carries no cohort: the backend reads it from the account.
+    expect(calls.find((call) => call.url.startsWith("/api/v1/impact-twin"))!.url).toBe("/api/v1/impact-twin");
+
+    await user.click(screen.getByRole("button", { name: /Requires Review/ }));
+    expect(screen.queryByText("Minimum attendance is 80%.")).not.toBeInTheDocument();
+    expect(screen.getByText("Students must follow the examination schedule.")).toBeInTheDocument();
+  });
+
+  it("explains when no approved changes apply", async () => {
+    mockApi({
+      [LOGIN]: TOKEN,
+      [ME]: { status: 200, body: STUDENT },
+      "GET /api/v1/impact-twin": { status: 200, body: { ...TWIN, latest_update: null, assessments: [], summary: { potential_impact: 0, requires_review: 0, no_direct_impact: 0, total: 0 } } },
+    });
+    const user = await signIn();
+    await user.click(await screen.findByRole("link", { name: "My Academic Impact Twin" }));
+    expect(await screen.findByText("No approved regulation changes apply to your cohort")).toBeInTheDocument();
+    expect(screen.getByText("No approved update")).toBeInTheDocument();
+  });
+
+  it("is not offered to administrators", async () => {
+    mockApi({ [LOGIN]: TOKEN, [ME]: { status: 200, body: ADMIN } });
+    await signIn(userEvent.setup(), "administrator");
+    const nav = await screen.findByRole("navigation", { name: "Main navigation" });
+    expect(within(nav).queryByRole("link", { name: "My Academic Impact Twin" })).not.toBeInTheDocument();
   });
 });

@@ -1,12 +1,24 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 import type { Resource } from "../hooks/useResource";
+import { Icon, type IconName } from "./icons";
 import { Notice } from "./Notice";
 
-export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: ReactNode; actions?: ReactNode }) {
+export function PageHeader({
+  title,
+  subtitle,
+  actions,
+  icon,
+}: {
+  title: string;
+  subtitle?: ReactNode;
+  actions?: ReactNode;
+  icon?: IconName;
+}) {
   return (
     <header className="page-header">
-      <div>
+      {icon ? <span className="page-header__icon"><Icon name={icon} size={22} /></span> : null}
+      <div className="page-header__text">
         <h1 className="page-header__title">{title}</h1>
         {subtitle ? <p className="page-header__subtitle">{subtitle}</p> : null}
       </div>
@@ -75,7 +87,7 @@ export function Loaded<T>({
   return <>{children(resource.data)}</>;
 }
 
-export type Tone = "good" | "caution" | "bad" | "neutral";
+export type Tone = "good" | "caution" | "bad" | "neutral" | "info" | "violet";
 
 export function Badge({ tone = "neutral", children }: { tone?: Tone; children: ReactNode }) {
   return <span className={`badge badge--${tone}`}>{children}</span>;
@@ -151,4 +163,98 @@ export function formatDate(value: string | null | undefined, withTime = false): 
   return withTime
     ? date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
     : date.toLocaleDateString(undefined, { dateStyle: "medium" });
+}
+
+const PROCESSING: Record<string, { label: string; tone: Tone }> = {
+  extracted: { label: "Text extracted", tone: "good" },
+  ingested: { label: "Text extracted", tone: "good" },
+  processing: { label: "Processing", tone: "info" },
+  uploaded: { label: "Uploaded", tone: "info" },
+  partial: { label: "Partially extracted", tone: "caution" },
+  failed: { label: "Extraction failed", tone: "bad" },
+  error: { label: "Extraction failed", tone: "bad" },
+};
+
+/** Extraction state recorded by the ingestion workflow. */
+export function ProcessingBadge({ status }: { status: string | null }) {
+  const known = PROCESSING[(status ?? "").toLowerCase()];
+  return <Badge tone={known?.tone ?? "neutral"}>{known?.label ?? status ?? "Unknown"}</Badge>;
+}
+
+export function isExtracted(status: string | null): boolean {
+  return PROCESSING[(status ?? "").toLowerCase()]?.tone === "good";
+}
+
+export function StatCard({
+  label,
+  value,
+  icon,
+  tone,
+  hint,
+}: {
+  label: string;
+  value: ReactNode;
+  icon: IconName;
+  tone: "emerald" | "amber" | "rose" | "blue" | "violet" | "teal";
+  hint?: ReactNode;
+}) {
+  return (
+    <div className={`stat-card tone-${tone}`}>
+      <span className="stat-card__icon"><Icon name={icon} size={20} /></span>
+      <div>
+        <span className="stat-card__label">{label}</span>
+        <strong className="stat-card__value">{value}</strong>
+        {hint ? <span className="stat-card__hint">{hint}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+/** Side drawer dialog: Escape or the backdrop closes it; focus moves into it on open. */
+export function Drawer({
+  title,
+  subtitle,
+  onClose,
+  children,
+  wide = false,
+}: {
+  title: string;
+  subtitle?: ReactNode;
+  onClose: () => void;
+  children: ReactNode;
+  wide?: boolean;
+}) {
+  const titleId = useId();
+  const closeRef = useRef<HTMLButtonElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    closeRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onCloseRef.current();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      previous?.focus?.();
+    };
+  }, []);
+  return (
+    <div className="drawer-layer">
+      <button type="button" className="drawer-backdrop" aria-label="Close panel" tabIndex={-1} onClick={onClose} />
+      <section className={`drawer${wide ? " drawer--wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId}>
+        <header className="drawer__head">
+          <div>
+            <h2 id={titleId} className="drawer__title">{title}</h2>
+            {subtitle ? <p className="drawer__subtitle">{subtitle}</p> : null}
+          </div>
+          <button ref={closeRef} type="button" className="icon-button" aria-label="Close" onClick={onClose}>
+            <Icon name="close" />
+          </button>
+        </header>
+        <div className="drawer__body">{children}</div>
+      </section>
+    </div>
+  );
 }

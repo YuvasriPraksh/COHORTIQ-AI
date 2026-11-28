@@ -87,6 +87,7 @@ ROUTE_PERMISSIONS: Mapping[tuple[str, str], Access] = MappingProxyType(
         ("GET", f"{_API}/change-radar/reviews/{{review_id}}"): Access.ADMINISTRATOR,
         ("PATCH", f"{_API}/change-radar/reviews/{{review_id}}"): Access.ADMINISTRATOR,
         ("GET", f"{_API}/updates"): Access.AUTHENTICATED,
+        ("GET", f"{_API}/impact-twin"): Access.AUTHENTICATED,
         # Administrator user management; administrators are provisioned by the CLI.
         ("GET", f"{_API}/admin/users"): Access.ADMINISTRATOR,
         ("POST", f"{_API}/admin/users"): Access.ADMINISTRATOR,

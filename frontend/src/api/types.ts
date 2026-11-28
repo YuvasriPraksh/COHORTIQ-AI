@@ -140,6 +140,7 @@ export interface Regulation {
   total_pages: number | null;
   processing_status: string | null;
   verification_status: string | null;
+  source_filename?: string | null;
 }
 
 export interface DocumentPage {
@@ -236,3 +237,52 @@ export interface ChangeReview {
 
 /** Upload limit enforced by the API (MAX_UPLOAD_BYTES default). */
 export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+/** GET /api/v1/impact-twin (backend/app/schemas/impact_twin.py). */
+export type ImpactClassification = "potential_impact" | "no_direct_impact" | "requires_review";
+
+export interface ImpactAssessment {
+  review_id: number;
+  change_id: number;
+  document_name: string;
+  previous_regulation_id: number;
+  previous_version: string;
+  new_regulation_id: number;
+  new_version: string;
+  reviewed_at: string | null;
+  change_type: "addition" | "removal" | "modification";
+  clause: string;
+  previous_page: number | null;
+  new_page: number | null;
+  previous_text: string | null;
+  new_text: string | null;
+  previous_text_truncated: boolean;
+  new_text_truncated: boolean;
+  applicability: string;
+  classification: ImpactClassification;
+  classification_label: string;
+  classification_reason: string;
+  previous_values: string[];
+  revised_values: string[];
+  text_similarity: number;
+  topics: string[];
+  implications: string[];
+  review_points: string[];
+}
+
+export interface ImpactTwin {
+  cohort: { admission_batch: string; programme: string } | null;
+  applicable_regulations: { id: number; document_name: string; regulation_version: string; effective_date: string | null }[];
+  latest_update: {
+    review_id: number;
+    document_name: string;
+    previous_version: string;
+    new_version: string;
+    reviewed_at: string | null;
+    change_count: number;
+  } | null;
+  summary: { potential_impact: number; requires_review: number; no_direct_impact: number; total: number };
+  assessments: ImpactAssessment[];
+  personal_records_available: boolean;
+  personalization_note: string;
+}

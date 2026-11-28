@@ -6,7 +6,8 @@
 export const API_BASE_URL: string = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
 export const DEFAULT_TIMEOUT_MS = 15_000;
-export const ASK_TIMEOUT_MS = 60_000;
+// Grounded answers wait for Gemini; measured latencies reached ~52 s, so allow two minutes.
+export const ASK_TIMEOUT_MS = 120_000;
 export const UPLOAD_TIMEOUT_MS = 120_000;
 
 export type ApiErrorKind =

@@ -7,3 +7,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   window.sessionStorage.clear();
 });
+
+// jsdom does not implement scrolling; the public layout scrolls to top on page change.
+window.scrollTo = () => {};
+Element.prototype.scrollIntoView = function scrollIntoView() {};

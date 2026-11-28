@@ -9,6 +9,7 @@ import type {
   Cohort,
   ChangeReview,
   DocumentPage,
+  ImpactTwin,
   IngestionResult,
   RegisterRequest,
   Regulation,
@@ -148,7 +149,17 @@ export function demoteToStudent(token: string, id: number): Promise<AdminUser> {
 
 export function listAuditEvents(
   token: string,
-  params: { action?: string; outcome?: string; limit?: number; offset?: number } = {},
+  params: {
+    action?: string;
+    outcome?: string;
+    actor_user_id?: number;
+    target_type?: string;
+    /** ISO 8601 with a timezone offset (the API requires one). */
+    occurred_after?: string;
+    occurred_before?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
   signal?: AbortSignal,
 ): Promise<AuditEventList> {
   return apiRequest<AuditEventList>(`${API}/admin/audit-events${query(params)}`, { token, signal });
@@ -184,4 +195,9 @@ export function setChangeReviewStatus(
 
 export async function listApprovedUpdates(token: string, signal?: AbortSignal): Promise<ChangeReview[]> {
   return (await apiRequest<{ updates: ChangeReview[] }>(`${API}/updates`, { token, signal })).updates;
+}
+
+/** Cohort-scoped impact of approved regulation changes; the cohort comes from the signed-in account. */
+export function fetchImpactTwin(token: string, signal?: AbortSignal): Promise<ImpactTwin> {
+  return apiRequest<ImpactTwin>(`${API}/impact-twin`, { token, signal });
 }

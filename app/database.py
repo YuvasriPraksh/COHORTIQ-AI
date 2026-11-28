@@ -149,7 +149,21 @@ def init_database(db_path: str | Path | None = None) -> None:
             );
             """
         )
+        # Additive migration: original upload filename shown in the admin document panel.
+        existing_columns = {row[1] for row in cursor.execute("PRAGMA table_info(regulations);")}
+        if "source_filename" not in existing_columns:
+            cursor.execute("ALTER TABLE regulations ADD COLUMN source_filename TEXT;")
         connection.commit()
+
+
+def _store_source_filename(cursor: sqlite3.Cursor, regulation_id: int, metadata: Mapping[str, Any]) -> None:
+    """Record the original upload filename, when provided, in the caller's transaction."""
+    source_filename = metadata.get("source_filename")
+    if source_filename:
+        cursor.execute(
+            "UPDATE regulations SET source_filename = ? WHERE id = ?;",
+            (str(source_filename), regulation_id),
+        )
 
 
 def insert_regulation(
@@ -243,6 +257,7 @@ def insert_regulation_with_pages(
         cursor.execute("BEGIN;")
         try:
             regulation_id = _insert_regulation_row(cursor, regulation_values)
+            _store_source_filename(cursor, regulation_id, metadata)
             _insert_page_rows(cursor, regulation_id, page_values)
             connection.commit()
         except BaseException:
@@ -375,7 +390,8 @@ def get_all_regulations(db_path: str | Path | None = None) -> list[dict[str, Any
             """
             SELECT id, document_name, regulation_version, effective_date,
                    applicable_batches, applicable_programmes, upload_date,
-                   total_pages, processing_status, verification_status
+                   total_pages, processing_status, verification_status,
+                   source_filename
             FROM regulations
             ORDER BY id ASC;
             """
@@ -401,7 +417,8 @@ def get_regulation_by_id(
             """
             SELECT id, document_name, regulation_version, effective_date,
                    applicable_batches, applicable_programmes, upload_date,
-                   total_pages, processing_status, verification_status
+                   total_pages, processing_status, verification_status,
+                   source_filename
             FROM regulations
             WHERE id = ?;
             """,
@@ -447,7 +464,8 @@ def get_applicable_regulations(
             """
             SELECT id, document_name, regulation_version, effective_date,
                    applicable_batches, applicable_programmes, upload_date,
-                   total_pages, processing_status, verification_status
+                   total_pages, processing_status, verification_status,
+                   source_filename
             FROM regulations
             ORDER BY id ASC;
             """
